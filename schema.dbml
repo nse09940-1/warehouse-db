@@ -1,0 +1,172 @@
+Enum supplier_order_status {
+  draft
+  placed
+  partially_received
+  received
+  cancelled
+}
+
+Enum customer_order_status {
+  new
+  confirmed
+  picking
+  shipped
+  delivered
+  cancelled
+}
+
+Enum shipment_status {
+  created
+  dispatched
+  delivered
+  cancelled
+}
+
+Enum inventory_movement_type {
+  receipt
+  shipment
+  write_off
+  adjustment
+}
+
+Table customers {
+  customer_id bigint [pk, increment]
+  full_name text [not null]
+  email text [not null, unique]
+  phone text
+  created_at timestamptz [not null]
+}
+
+Table employees {
+  employee_id bigint [pk, increment]
+  full_name text [not null]
+  email text [not null, unique]
+  position_name text [not null]
+  hired_at date [not null]
+}
+
+Table suppliers {
+  supplier_id bigint [pk, increment]
+  supplier_name text [not null, unique]
+  email text
+  phone text
+}
+
+Table warehouses {
+  warehouse_id bigint [pk, increment]
+  warehouse_name text [not null, unique]
+  city text [not null]
+}
+
+Table product_categories {
+  category_id bigint [pk, increment]
+  category_name text [not null, unique]
+}
+
+Table brands {
+  brand_id bigint [pk, increment]
+  brand_name text [not null, unique]
+}
+
+Table products {
+  product_id bigint [pk, increment]
+  category_id bigint [not null, ref: > product_categories.category_id]
+  brand_id bigint [not null, ref: > brands.brand_id]
+  product_name text [not null]
+  unit_of_measure text [not null]
+
+  indexes {
+    (brand_id, product_name) [unique]
+  }
+}
+
+Table supplier_orders {
+  supplier_order_id bigint [pk, increment]
+  supplier_id bigint [not null, ref: > suppliers.supplier_id]
+  created_by_employee_id bigint [not null, ref: > employees.employee_id]
+  order_date date [not null]
+  status supplier_order_status [not null]
+}
+
+Table supplier_order_items {
+  supplier_order_item_id bigint [pk, increment]
+  supplier_order_id bigint [not null, ref: > supplier_orders.supplier_order_id]
+  product_id bigint [not null, ref: > products.product_id]
+  ordered_quantity numeric(14,3) [not null]
+  unit_price numeric(14,2) [not null]
+
+  indexes {
+    (supplier_order_id, product_id) [unique]
+  }
+}
+
+Table goods_receipts {
+  goods_receipt_id bigint [pk, increment]
+  supplier_order_id bigint [not null, ref: > supplier_orders.supplier_order_id]
+  warehouse_id bigint [not null, ref: > warehouses.warehouse_id]
+  accepted_by_employee_id bigint [not null, ref: > employees.employee_id]
+  received_at timestamptz [not null]
+}
+
+Table goods_receipt_items {
+  goods_receipt_item_id bigint [pk, increment]
+  goods_receipt_id bigint [not null, ref: > goods_receipts.goods_receipt_id]
+  supplier_order_item_id bigint [not null, ref: > supplier_order_items.supplier_order_item_id]
+  received_quantity numeric(14,3) [not null]
+  unit_cost numeric(14,2) [not null]
+  expiration_date date
+
+  indexes {
+    (goods_receipt_id, supplier_order_item_id) [unique]
+  }
+}
+
+Table customer_orders {
+  customer_order_id bigint [pk, increment]
+  customer_id bigint [not null, ref: > customers.customer_id]
+  delivery_address text [not null]
+  created_at timestamptz [not null]
+  status customer_order_status [not null]
+}
+
+Table customer_order_items {
+  customer_order_item_id bigint [pk, increment]
+  customer_order_id bigint [not null, ref: > customer_orders.customer_order_id]
+  product_id bigint [not null, ref: > products.product_id]
+  ordered_quantity numeric(14,3) [not null]
+  sale_price numeric(14,2) [not null]
+
+  indexes {
+    (customer_order_id, product_id) [unique]
+  }
+}
+
+Table shipments {
+  shipment_id bigint [pk, increment]
+  customer_order_id bigint [not null, ref: > customer_orders.customer_order_id]
+  warehouse_id bigint [not null, ref: > warehouses.warehouse_id]
+  shipped_by_employee_id bigint [not null, ref: > employees.employee_id]
+  shipped_at timestamptz [not null]
+  status shipment_status [not null]
+}
+
+Table shipment_items {
+  shipment_item_id bigint [pk, increment]
+  shipment_id bigint [not null, ref: > shipments.shipment_id]
+  customer_order_item_id bigint [not null, ref: > customer_order_items.customer_order_item_id]
+  shipped_quantity numeric(14,3) [not null]
+
+  indexes {
+    (shipment_id, customer_order_item_id) [unique]
+  }
+}
+
+Table inventory_movements {
+  inventory_movement_id bigint [pk, increment]
+  product_id bigint [not null, ref: > products.product_id]
+  warehouse_id bigint [not null, ref: > warehouses.warehouse_id]
+  movement_type inventory_movement_type [not null]
+  quantity numeric(14,3) [not null]
+  moved_at timestamptz [not null]
+  employee_id bigint [not null, ref: > employees.employee_id]
+}

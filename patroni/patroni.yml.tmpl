@@ -1,0 +1,78 @@
+scope: ${PATRONI_SCOPE}
+namespace: /service/
+name: ${PATRONI_NAME}
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: ${PATRONI_RESTAPI_CONNECT_ADDRESS}
+
+etcd3:
+  hosts: ${PATRONI_ETCD_HOSTS}
+
+bootstrap:
+  dcs:
+    ttl: ${PATRONI_TTL}
+    loop_wait: ${PATRONI_LOOP_WAIT}
+    retry_timeout: ${PATRONI_RETRY_TIMEOUT}
+    maximum_lag_on_failover: 1048576
+    master_start_timeout: 300
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        wal_level: replica
+        hot_standby: "on"
+        wal_log_hints: "on"
+        max_connections: 200
+        max_wal_senders: 10
+        max_replication_slots: 10
+        max_worker_processes: 8
+        shared_buffers: 256MB
+        shared_preload_libraries: pg_stat_statements
+        pg_stat_statements.track: all
+        pg_stat_statements.max: 10000
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+  pg_hba:
+    - host all all 0.0.0.0/0 scram-sha-256
+    - host replication ${PATRONI_REPLICATION_USERNAME} 0.0.0.0/0 scram-sha-256
+  users:
+    ${POSTGRES_USER}:
+      password: ${POSTGRES_PASSWORD}
+      options:
+        - createdb
+        - createrole
+  post_bootstrap: /opt/patroni/scripts/bootstrap.sh
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: ${PATRONI_POSTGRESQL_CONNECT_ADDRESS}
+  data_dir: ${PATRONI_DATA_DIR}
+  bin_dir: /usr/lib/postgresql/16/bin
+  pgpass: /tmp/pgpass
+  authentication:
+    superuser:
+      username: ${PATRONI_SUPERUSER_USERNAME}
+      password: ${PATRONI_SUPERUSER_PASSWORD}
+    replication:
+      username: ${PATRONI_REPLICATION_USERNAME}
+      password: ${PATRONI_REPLICATION_PASSWORD}
+    rewind:
+      username: ${PATRONI_REWIND_USERNAME}
+      password: ${PATRONI_REWIND_PASSWORD}
+  parameters:
+    unix_socket_directories: /var/run/postgresql
+    shared_preload_libraries: pg_stat_statements
+    pg_stat_statements.track: all
+    pg_stat_statements.max: 10000
+  create_replica_methods:
+    - basebackup
+  basebackup:
+    checkpoint: fast
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false

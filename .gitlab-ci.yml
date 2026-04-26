@@ -1,0 +1,4 @@
+include:
+  - project: 'db-infra/lab-stage-ci'
+    file: 'testing-job.yml'
+    ref: 'main'

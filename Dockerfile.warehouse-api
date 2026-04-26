@@ -1,0 +1,23 @@
+FROM drogonframework/drogon:latest AS builder
+
+WORKDIR /src
+
+COPY warehouse-api/CMakeLists.txt ./CMakeLists.txt
+COPY warehouse-api/src ./src
+
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build --parallel
+
+FROM drogonframework/drogon:latest
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /src/build/warehouse-api /app/warehouse-api
+
+EXPOSE 8080
+
+ENTRYPOINT ["/app/warehouse-api"]

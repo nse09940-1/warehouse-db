@@ -1,0 +1,385 @@
+services:
+  etcd1:
+    image: quay.io/coreos/etcd:v3.5.16
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd1
+      - --data-dir=/etcd-data
+      - --initial-advertise-peer-urls=http://etcd1:2380
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --advertise-client-urls=http://etcd1:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --listen-metrics-urls=http://0.0.0.0:2381
+      - --enable-v2=true
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=${ETCD_INITIAL_CLUSTER_TOKEN:-warehouse-etcd-cluster}
+    volumes:
+      - etcd1_data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=http://127.0.0.1:2379", "endpoint", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  etcd2:
+    image: quay.io/coreos/etcd:v3.5.16
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd2
+      - --data-dir=/etcd-data
+      - --initial-advertise-peer-urls=http://etcd2:2380
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --advertise-client-urls=http://etcd2:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --listen-metrics-urls=http://0.0.0.0:2381
+      - --enable-v2=true
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=${ETCD_INITIAL_CLUSTER_TOKEN:-warehouse-etcd-cluster}
+    volumes:
+      - etcd2_data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=http://127.0.0.1:2379", "endpoint", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  etcd3:
+    image: quay.io/coreos/etcd:v3.5.16
+    command:
+      - /usr/local/bin/etcd
+      - --name=etcd3
+      - --data-dir=/etcd-data
+      - --initial-advertise-peer-urls=http://etcd3:2380
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --advertise-client-urls=http://etcd3:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --listen-metrics-urls=http://0.0.0.0:2381
+      - --enable-v2=true
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-state=new
+      - --initial-cluster-token=${ETCD_INITIAL_CLUSTER_TOKEN:-warehouse-etcd-cluster}
+    volumes:
+      - etcd3_data:/etcd-data
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=http://127.0.0.1:2379", "endpoint", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  patroni1:
+    build:
+      context: .
+      dockerfile: Dockerfile.patroni
+    environment:
+      PATRONI_SCOPE: ${PATRONI_SCOPE:-warehouse-cluster}
+      PATRONI_NAME: patroni1
+      PATRONI_ETCD_HOSTS: etcd1:2379,etcd2:2379,etcd3:2379
+      PATRONI_RESTAPI_CONNECT_ADDRESS: patroni1:8008
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: patroni1:5432
+      PATRONI_DATA_DIR: /var/lib/postgresql/patroni
+      PATRONI_TTL: ${PATRONI_TTL:-30}
+      PATRONI_LOOP_WAIT: ${PATRONI_LOOP_WAIT:-10}
+      PATRONI_RETRY_TIMEOUT: ${PATRONI_RETRY_TIMEOUT:-10}
+      PATRONI_SUPERUSER_USERNAME: ${PATRONI_SUPERUSER_USERNAME:-postgres}
+      PATRONI_SUPERUSER_PASSWORD: ${PATRONI_SUPERUSER_PASSWORD:-postgres_password}
+      PATRONI_REPLICATION_USERNAME: ${PATRONI_REPLICATION_USERNAME:-replicator}
+      PATRONI_REPLICATION_PASSWORD: ${PATRONI_REPLICATION_PASSWORD:-replicator_password}
+      PATRONI_REWIND_USERNAME: ${PATRONI_REWIND_USERNAME:-postgres}
+      PATRONI_REWIND_PASSWORD: ${PATRONI_REWIND_PASSWORD:-postgres_password}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    depends_on:
+      etcd1:
+        condition: service_healthy
+      etcd2:
+        condition: service_healthy
+      etcd3:
+        condition: service_healthy
+    volumes:
+      - patroni1_data:/var/lib/postgresql/patroni
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8008/health > /dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  patroni2:
+    build:
+      context: .
+      dockerfile: Dockerfile.patroni
+    environment:
+      PATRONI_SCOPE: ${PATRONI_SCOPE:-warehouse-cluster}
+      PATRONI_NAME: patroni2
+      PATRONI_ETCD_HOSTS: etcd1:2379,etcd2:2379,etcd3:2379
+      PATRONI_RESTAPI_CONNECT_ADDRESS: patroni2:8008
+      PATRONI_POSTGRESQL_CONNECT_ADDRESS: patroni2:5432
+      PATRONI_DATA_DIR: /var/lib/postgresql/patroni
+      PATRONI_TTL: ${PATRONI_TTL:-30}
+      PATRONI_LOOP_WAIT: ${PATRONI_LOOP_WAIT:-10}
+      PATRONI_RETRY_TIMEOUT: ${PATRONI_RETRY_TIMEOUT:-10}
+      PATRONI_SUPERUSER_USERNAME: ${PATRONI_SUPERUSER_USERNAME:-postgres}
+      PATRONI_SUPERUSER_PASSWORD: ${PATRONI_SUPERUSER_PASSWORD:-postgres_password}
+      PATRONI_REPLICATION_USERNAME: ${PATRONI_REPLICATION_USERNAME:-replicator}
+      PATRONI_REPLICATION_PASSWORD: ${PATRONI_REPLICATION_PASSWORD:-replicator_password}
+      PATRONI_REWIND_USERNAME: ${PATRONI_REWIND_USERNAME:-postgres}
+      PATRONI_REWIND_PASSWORD: ${PATRONI_REWIND_PASSWORD:-postgres_password}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    depends_on:
+      etcd1:
+        condition: service_healthy
+      etcd2:
+        condition: service_healthy
+      etcd3:
+        condition: service_healthy
+    volumes:
+      - patroni2_data:/var/lib/postgresql/patroni
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8008/health > /dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  haproxy:
+    image: haproxy:lts-bookworm
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+      - "8404:8404"
+    depends_on:
+      patroni1:
+        condition: service_healthy
+      patroni2:
+        condition: service_healthy
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      default:
+        aliases:
+          - postgres
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_PROMETHEUS_AUTH_TYPE: ${MINIO_PROMETHEUS_AUTH_TYPE:-public}
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    image: quay.io/minio/mc:RELEASE.2025-03-12T17-29-24Z
+    environment:
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BACKUP_USER: ${MINIO_BACKUP_USER}
+      MINIO_BACKUP_PASSWORD: ${MINIO_BACKUP_PASSWORD}
+      BUCKET_BACKUP_NAME: ${BUCKET_BACKUP_NAME}
+    depends_on:
+      minio:
+        condition: service_started
+    volumes:
+      - ./:/workspace:ro
+    entrypoint: ["/bin/sh", "/workspace/scripts/minio-init.sh"]
+
+  migrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.migrator
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TEST_DB_NAME: ${TEST_DB_NAME}
+      APP_ENV: ${APP_ENV}
+      MIGRATION_TARGET_TAG: ${MIGRATION_VERSION}
+      SEED_COUNT: ${SEED_COUNT}
+      POSTGRES_EXPORTER_USER: ${POSTGRES_EXPORTER_USER}
+      POSTGRES_EXPORTER_PASSWORD: ${POSTGRES_EXPORTER_PASSWORD}
+    depends_on:
+      haproxy:
+        condition: service_started
+    volumes:
+      - ./:/workspace
+    entrypoint: ["/bin/bash", "/workspace/scripts/migrator-entrypoint.sh"]
+
+  warehouse-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.warehouse-api
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      API_PORT: ${API_PORT:-8080}
+      API_THREADS: ${API_THREADS:-4}
+      API_DB_POOL_SIZE: ${API_DB_POOL_SIZE:-16}
+      API_USE_REVENUE_MV: ${API_USE_REVENUE_MV:-false}
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  backup-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.backup-scheduler
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_BACKUP_USER: ${MINIO_BACKUP_USER}
+      MINIO_BACKUP_PASSWORD: ${MINIO_BACKUP_PASSWORD}
+      BUCKET_BACKUP_NAME: ${BUCKET_BACKUP_NAME}
+      BACKUP_RETENTION_COUNT: ${BACKUP_RETENTION_COUNT}
+      BACKUP_INTERVAL: ${BACKUP_INTERVAL}
+      BACKUP_STATE_FILE: /backup-state/last-backup-state.json
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      migrator:
+        condition: service_completed_successfully
+    volumes:
+      - backup_state:/backup-state
+
+  backup-exporter:
+    image: python:3.12-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      BUCKET_BACKUP_NAME: ${BUCKET_BACKUP_NAME}
+      BACKUP_STATE_FILE: /backup-state/last-backup-state.json
+    depends_on:
+      backup-scheduler:
+        condition: service_started
+    command: ["python", "/workspace/scripts/backup-exporter.py"]
+    volumes:
+      - ./:/workspace:ro
+      - backup_state:/backup-state:ro
+
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    command:
+      - --extend.query-path=/etc/postgres_exporter/queries.yaml
+    environment:
+      DATA_SOURCE_URI: "postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      DATA_SOURCE_USER: ${POSTGRES_EXPORTER_USER}
+      DATA_SOURCE_PASS: ${POSTGRES_EXPORTER_PASSWORD}
+    depends_on:
+      haproxy:
+        condition: service_started
+      migrator:
+        condition: service_completed_successfully
+    volumes:
+      - ./monitoring/postgres_exporter/queries.yaml:/etc/postgres_exporter/queries.yaml:ro
+
+  haproxy-exporter:
+    image: quay.io/prometheus/haproxy-exporter:v0.15.0
+    command:
+      - --haproxy.scrape-uri=http://haproxy:8404/stats;csv
+      - --web.listen-address=:9101
+    depends_on:
+      haproxy:
+        condition: service_started
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      postgres_exporter:
+        condition: service_started
+      backup-exporter:
+        condition: service_started
+      haproxy-exporter:
+        condition: service_started
+      minio:
+        condition: service_started
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+  k6:
+    image: grafana/k6:0.52.0
+    profiles:
+      - load
+    environment:
+      BASE_URL: http://warehouse-api:8080
+      FIRST_ORDER_ID: ${K6_FIRST_ORDER_ID:-400001}
+      ORDER_COUNT: ${K6_ORDER_COUNT:-300000}
+    depends_on:
+      warehouse-api:
+        condition: service_healthy
+    volumes:
+      - ./load:/scripts:ro
+      - ./profiling:/profiling
+    command:
+      - run
+      - --summary-export
+      - ${K6_SUMMARY_EXPORT:-/profiling/1/k6_summary.json}
+      - /scripts/k6_script.js
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+    ports:
+      - "3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+
+  swagger-ui:
+    image: swaggerapi/swagger-ui:latest
+    environment:
+      SWAGGER_JSON: /openapi/openapi.yaml
+    ports:
+      - "8081:8080"
+    depends_on:
+      warehouse-api:
+        condition: service_healthy
+    volumes:
+      - ./openapi.yaml:/openapi/openapi.yaml:ro
+
+volumes:
+  etcd1_data:
+  etcd2_data:
+  etcd3_data:
+  patroni1_data:
+  patroni2_data:
+  prometheus_data:
+  grafana_data:
+  minio_data:
+  backup_state:

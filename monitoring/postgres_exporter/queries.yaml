@@ -1,0 +1,70 @@
+pg_stat_statements_top:
+  query: |
+    SELECT
+      left(regexp_replace(query, '[[:space:]]+', ' ', 'g'), 180) AS query,
+      round(mean_exec_time::numeric, 3)::float AS mean_exec_time,
+      calls::float AS calls,
+      shared_blks_hit::float AS shared_blks_hit,
+      shared_blks_read::float AS shared_blks_read
+    FROM pg_stat_statements
+    WHERE dbid = (
+      SELECT oid
+      FROM pg_database
+      WHERE datname = current_database()
+    )
+    ORDER BY mean_exec_time DESC
+    LIMIT 5;
+  master: true
+  metrics:
+    - query:
+        usage: "LABEL"
+        description: "Normalized SQL text truncated to 180 characters."
+    - mean_exec_time:
+        usage: "GAUGE"
+        description: "Mean execution time in milliseconds."
+    - calls:
+        usage: "COUNTER"
+        description: "Number of calls for the statement."
+    - shared_blks_hit:
+        usage: "COUNTER"
+        description: "Shared block cache hits for the statement."
+    - shared_blks_read:
+        usage: "COUNTER"
+        description: "Shared blocks read from disk for the statement."
+
+pg_stat_statements_cache:
+  query: |
+    SELECT
+      COALESCE(sum(shared_blks_hit), 0)::float AS shared_blks_hit,
+      COALESCE(sum(shared_blks_read), 0)::float AS shared_blks_read
+    FROM pg_stat_statements
+    WHERE dbid = (
+      SELECT oid
+      FROM pg_database
+      WHERE datname = current_database()
+    );
+  master: true
+  metrics:
+    - shared_blks_hit:
+        usage: "COUNTER"
+        description: "Total shared block cache hits in pg_stat_statements."
+    - shared_blks_read:
+        usage: "COUNTER"
+        description: "Total shared blocks read from disk in pg_stat_statements."
+
+pg_activity:
+  query: |
+    SELECT
+      COALESCE(state, 'unknown') AS state,
+      count(*)::float AS connections
+    FROM pg_stat_activity
+    WHERE datname = current_database()
+    GROUP BY COALESCE(state, 'unknown');
+  master: true
+  metrics:
+    - state:
+        usage: "LABEL"
+        description: "PostgreSQL backend state."
+    - connections:
+        usage: "GAUGE"
+        description: "Connections by backend state."

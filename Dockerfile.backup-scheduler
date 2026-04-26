@@ -1,0 +1,28 @@
+FROM postgres:16-bookworm
+
+ARG SUPERCRONIC_VERSION=v0.2.33
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      bash \
+      ca-certificates \
+      curl \
+      jq \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc \
+    && chmod +x /usr/local/bin/mc
+
+RUN curl -fsSL -o /usr/local/bin/supercronic "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-amd64" \
+    && chmod +x /usr/local/bin/supercronic
+
+COPY scripts/backup-entrypoint.sh /usr/local/bin/backup-entrypoint.sh
+COPY scripts/backup-once.sh /usr/local/bin/backup-once.sh
+COPY scripts/restore-backup.sh /usr/local/bin/restore-backup.sh
+
+RUN chmod +x \
+    /usr/local/bin/backup-entrypoint.sh \
+    /usr/local/bin/backup-once.sh \
+    /usr/local/bin/restore-backup.sh
+
+CMD ["/usr/local/bin/backup-entrypoint.sh"]

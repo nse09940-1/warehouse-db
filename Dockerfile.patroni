@@ -1,0 +1,27 @@
+FROM postgres:16-bookworm
+
+ARG PATRONI_VERSION=4.0.6
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      bash \
+      ca-certificates \
+      curl \
+      gettext-base \
+      python3 \
+      python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+      "patroni[etcd3]==${PATRONI_VERSION}" \
+      "psycopg[binary]==3.2.6"
+
+COPY patroni/patroni.yml.tmpl /etc/patroni/patroni.yml.tmpl
+COPY patroni/patroni-entrypoint.sh /usr/local/bin/patroni-entrypoint.sh
+COPY patroni/bootstrap.sh /opt/patroni/scripts/bootstrap.sh
+
+RUN chmod +x /usr/local/bin/patroni-entrypoint.sh /opt/patroni/scripts/bootstrap.sh \
+    && mkdir -p /etc/patroni /opt/patroni/scripts /var/lib/postgresql/patroni \
+    && chown -R postgres:postgres /etc/patroni /opt/patroni /var/lib/postgresql/patroni
+
+ENTRYPOINT ["/usr/local/bin/patroni-entrypoint.sh"]

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="
+        http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <include file="migrations/000_baseline_tag.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/001_reference_entities.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/002_products.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/003_procurement.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/004_customer_orders.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/005_shipments_and_inventory.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/006_monitoring_role.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/007_optimization_workload.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/008_customer_order_delivery_window.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/009_customer_order_audit_notes.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/010_customer_order_denormalized_totals.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/011_idx_audit_notes_order_created.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/012_idx_audit_notes_created_brin.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/013_mv_revenue_by_day_category.sql" relativeToChangelogFile="true"/>
+
+</databaseChangeLog>

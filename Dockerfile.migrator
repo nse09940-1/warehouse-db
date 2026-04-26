@@ -1,0 +1,32 @@
+FROM golang:1.24-bookworm AS seqwall-builder
+
+ARG SEQWALL_REF=latest
+
+RUN GOBIN=/usr/local/bin go install "github.com/realkarych/seqwall@${SEQWALL_REF}"
+
+FROM postgres:16-bookworm
+
+ARG LIQUIBASE_VERSION=4.31.1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+      bash \
+      ca-certificates \
+      curl \
+      openjdk-17-jre-headless \
+      unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL -o /tmp/liquibase.zip "https://github.com/liquibase/liquibase/releases/download/v${LIQUIBASE_VERSION}/liquibase-${LIQUIBASE_VERSION}.zip" \
+    && unzip -q /tmp/liquibase.zip -d /opt/liquibase \
+    && ln -s /opt/liquibase/liquibase /usr/local/bin/liquibase \
+    && chmod +x /opt/liquibase/liquibase \
+    && rm -f /tmp/liquibase.zip
+
+COPY --from=seqwall-builder /usr/local/bin/seqwall /usr/local/bin/seqwall
+
+RUN rm -rf /tmp/*
+
+WORKDIR /workspace
+
+CMD ["/bin/bash", "/workspace/scripts/migrator-entrypoint.sh"]

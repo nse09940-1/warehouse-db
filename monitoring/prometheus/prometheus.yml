@@ -1,0 +1,44 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - prometheus:9090
+
+  - job_name: postgres_exporter
+    static_configs:
+      - targets:
+          - postgres_exporter:9187
+
+  - job_name: patroni
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - patroni1:8008
+          - patroni2:8008
+
+  - job_name: etcd
+    static_configs:
+      - targets:
+          - etcd1:2381
+          - etcd2:2381
+          - etcd3:2381
+
+  - job_name: haproxy
+    static_configs:
+      - targets:
+          - haproxy-exporter:9101
+
+  - job_name: minio
+    metrics_path: /minio/v2/metrics/cluster
+    static_configs:
+      - targets:
+          - minio:9000
+
+  - job_name: backup_exporter
+    static_configs:
+      - targets:
+          - backup-exporter:9808
