@@ -1,0 +1,231 @@
+{
+    "root_group": {
+        "id": "d41d8cd98f00b204e9800998ecf8427e",
+        "groups": {},
+        "checks": {
+                "log insert status is 201": {
+                    "passes": 4179,
+                    "fails": 2,
+                    "name": "log insert status is 201",
+                    "path": "::log insert status is 201",
+                    "id": "0c4e03408a49359e57793f7ca239ea84"
+                },
+                "oltp read status is 200": {
+                    "id": "1c1a5fd2a2ff8ab679f69e1790183273",
+                    "passes": 1678,
+                    "fails": 2,
+                    "name": "oltp read status is 200",
+                    "path": "::oltp read status is 200"
+                },
+                "oltp insert status is 201": {
+                    "name": "oltp insert status is 201",
+                    "path": "::oltp insert status is 201",
+                    "id": "5a25e06e225599513f9ab2c03cd90b76",
+                    "passes": 1678,
+                    "fails": 2
+                },
+                "oltp update status is 200": {
+                    "id": "ad3520a7cea933da62d07e8933327504",
+                    "passes": 1678,
+                    "fails": 2,
+                    "name": "oltp update status is 200",
+                    "path": "::oltp update status is 200"
+                },
+                "olap revenue status is 200": {
+                    "id": "468d0540743826ec6498c863fbfe452b",
+                    "passes": 28,
+                    "fails": 1,
+                    "name": "olap revenue status is 200",
+                    "path": "::olap revenue status is 200"
+                },
+                "olap turnover status is 200": {
+                    "name": "olap turnover status is 200",
+                    "path": "::olap turnover status is 200",
+                    "id": "b89e366677c319076da67d1c82065fd5",
+                    "passes": 26,
+                    "fails": 3
+                }
+            },
+        "name": "",
+        "path": ""
+    },
+    "metrics": {
+        "http_req_failed": {
+            "passes": 31,
+            "fails": 9267,
+            "thresholds": {
+                "rate<0.05": false
+            },
+            "value": 0.0033340503334050335
+        },
+        "http_req_waiting": {
+            "max": 131007.783862,
+            "p(90)": 200.1847153000001,
+            "p(95)": 338.4906141999999,
+            "avg": 356.98488141234657,
+            "min": 0,
+            "med": 28.444626
+        },
+        "http_req_tls_handshaking": {
+            "max": 0,
+            "p(90)": 0,
+            "p(95)": 0,
+            "avg": 0,
+            "min": 0,
+            "med": 0
+        },
+        "http_req_duration{profile:oltp_insert}": {
+            "max": 72222.27489,
+            "p(90)": 336.217844,
+            "p(95)": 504.623695,
+            "avg": 509.26245986274535,
+            "min": 0.116965,
+            "med": 150.36244,
+            "thresholds": {
+                "p(95)<10000": false
+            }
+        },
+        "http_req_sending": {
+            "avg": 19.019511471069062,
+            "min": 0.0036,
+            "med": 0.026102,
+            "max": 21247.47286,
+            "p(90)": 0.061705,
+            "p(95)": 0.08041604999999996
+        },
+        "http_req_duration{profile:log_insert}": {
+            "min": 11.422048,
+            "med": 29.851828,
+            "max": 72216.207764,
+            "p(90)": 138.09989600000003,
+            "p(95)": 223.78004109999966,
+            "avg": 208.80041490685457,
+            "thresholds": {
+                "p(95)<10000": false
+            }
+        },
+        "http_req_blocked": {
+            "p(90)": 0.008201,
+            "p(95)": 0.012815849999999964,
+            "avg": 16.613909458485683,
+            "min": 0.0004,
+            "med": 0.005091,
+            "max": 14859.591709
+        },
+        "iteration_duration": {
+            "max": 151582.260754,
+            "p(90)": 414.26642050000004,
+            "p(95)": 591.8635575500001,
+            "avg": 537.6317265074696,
+            "min": 111.897704,
+            "med": 147.321348
+        },
+        "http_req_duration{profile:oltp_read}": {
+            "max": 72285.177945,
+            "p(90)": 60.44907250000001,
+            "p(95)": 169.99282359999984,
+            "avg": 322.9423754435868,
+            "min": 0.132407,
+            "med": 2.627107,
+            "thresholds": {
+                "p(95)<10000": false
+            }
+        },
+        "http_req_duration{expected_response:true}": {
+            "avg": 171.21765911902386,
+            "min": 0.116965,
+            "med": 28.565411,
+            "max": 33645.794203,
+            "p(90)": 197.99949059999992,
+            "p(95)": 320.2048732999999
+        },
+        "http_req_duration": {
+            "p(90)": 200.77699080000022,
+            "p(95)": 347.0722732499999,
+            "avg": 393.19041231490576,
+            "min": 0.116965,
+            "med": 28.6279885,
+            "max": 131007.805363
+        },
+        "vus": {
+            "value": 0,
+            "min": 0,
+            "max": 23
+        },
+        "data_sent": {
+            "rate": 5152.315790344854,
+            "count": 1535240
+        },
+        "data_received": {
+            "count": 1163796327,
+            "rate": 3905738.641741645
+        },
+        "http_req_connecting": {
+            "avg": 0.03220943966444397,
+            "min": 0,
+            "med": 0,
+            "max": 22.164248,
+            "p(90)": 0,
+            "p(95)": 0
+        },
+        "http_req_receiving": {
+            "med": 0.093809,
+            "max": 38299.235285,
+            "p(90)": 0.1639705000000002,
+            "p(95)": 0.22475014999999993,
+            "avg": 17.186019431490653,
+            "min": 0
+        },
+        "iterations": {
+            "count": 5890,
+            "rate": 19.767033170794917
+        },
+        "http_req_duration{profile:olap_revenue}": {
+            "avg": 7730.716546517241,
+            "min": 1187.151275,
+            "med": 2447.554279,
+            "max": 93311.324881,
+            "p(90)": 12410.653762399983,
+            "p(95)": 30810.0213038,
+            "thresholds": {
+                "p(95)<30000": true
+            }
+        },
+        "http_reqs": {
+            "count": 9298,
+            "rate": 31.20439294092549
+        },
+        "checks": {
+            "passes": 9267,
+            "fails": 12,
+            "value": 0.9987067571936631
+        },
+        "http_req_duration{profile:olap_turnover}": {
+            "p(90)": 45577.20235119996,
+            "p(95)": 98293.62895899998,
+            "avg": 17296.331637206895,
+            "min": 2342.136448,
+            "med": 4939.624424,
+            "max": 131007.805363,
+            "thresholds": {
+                "p(95)<30000": true
+            }
+        },
+        "http_req_duration{profile:oltp_update}": {
+            "avg": 388.45138728647674,
+            "min": 0.127327,
+            "med": 6.132364,
+            "max": 72234.558336,
+            "p(90)": 147.976874,
+            "p(95)": 377.07855825,
+            "thresholds": {
+                "p(95)<10000": false
+            }
+        },
+        "vus_max": {
+            "value": 23,
+            "min": 23,
+            "max": 23
+        }
+    }
+}

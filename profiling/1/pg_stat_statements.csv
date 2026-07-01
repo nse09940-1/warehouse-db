@@ -1,0 +1,301 @@
+query,mean_exec_time,calls,shared_blks_hit,shared_blks_read
+"WITH audit_counts AS (
+  SELECT
+    customer_order_id,
+    count(*) AS audit_note_count
+  FROM customer_order_audit_notes
+  GROUP BY customer_order_id
+),
+order_category_revenue AS (
+  SELECT
+    co.customer_order_id,
+    date_trunc($3, co.created_at)::date AS sales_day,
+    pc.category_name,
+    sum(coi.ordered_quantity * coi.sale_price) AS revenue
+  FROM customer_orders co
+  JOIN customer_order_items coi ON coi.customer_order_id = co.customer_order_id
+  JOIN products p ON p.product_id = coi.product_id
+  JOIN product_categories pc ON pc.category_id = p.category_id
+  WHERE co.created_at >= $1::timestamptz
+    AND co.created_at < $2::timestamptz
+  GROUP BY co.customer_order_id, sales_day, pc.category_name
+)
+SELECT
+  ocr.sales_day,
+  ocr.category_name,
+  count(DISTINCT ocr.customer_order_id) AS order_count,
+  sum(ocr.revenue) AS revenue,
+  sum(COALESCE(audit_counts.audit_note_count, $4)) AS audit_note_count
+FROM order_category_revenue ocr
+LEFT JOIN audit_counts ON audit_counts.customer_order_id = ocr.customer_order_id
+GROUP BY ocr.sales_day, ocr.category_name
+ORDER BY sales_day DESC, revenue DESC
+LIMIT $5",1230.073706508334,240,105498168,0
+"WITH movement_totals AS (
+  SELECT
+    w.warehouse_id,
+    w.warehouse_name,
+    p.product_id,
+    p.product_name,
+    sum(CASE WHEN im.movement_type = $4 THEN im.quantity ELSE $5 END) AS received_quantity,
+    sum(CASE WHEN im.movement_type = $6 THEN im.quantity ELSE $7 END) AS shipped_quantity,
+    sum(CASE WHEN im.movement_type IN ($8, $9) THEN im.quantity ELSE $10 END) AS adjusted_quantity
+  FROM inventory_movements im
+  JOIN warehouses w ON w.warehouse_id = im.warehouse_id
+  JOIN products p ON p.product_id = im.product_id
+  WHERE im.moved_at >= $1::timestamptz
+    AND im.moved_at < $2::timestamptz
+  GROUP BY w.warehouse_id, w.warehouse_name, p.product_id, p.product_name
+),
+ranked AS (
+  SELECT
+    *,
+    (received_quantity + shipped_quantity + adjusted_quantity) AS total_quantity,
+    dense_rank() OVER (
+      PARTITION BY warehouse_id
+      ORDER BY (received_quantity + shipped_quantity + adjusted_quantity) DESC
+    ) AS product_rank
+  FROM movement_totals
+  WHERE (received_quantity + shipped_quantity + adjusted_quantity) >= $3::numeric
+)
+SELECT
+  warehouse_id,
+  warehouse_name,
+  product_id,
+  product_name,
+  received_quantity,
+  shipped_quantity,
+  adjusted_quantity,
+  total_quantity,
+  product_rank
+FROM ranked
+WHERE product_rank <= $11
+ORDER BY warehouse_name, product_rank, product_name",793.5583770708329,240,400925,0
+"WITH selected_customer AS (
+  SELECT customer_id
+  FROM customers
+  ORDER BY random()
+  LIMIT $1
+),
+selected_products AS (
+  SELECT
+    product_id,
+    row_number() OVER () AS rn,
+    (row_number() OVER () + $2)::numeric(14,3) AS ordered_quantity,
+    ($3 + floor(random() * $4))::numeric(14,2) AS sale_price
+  FROM products
+  ORDER BY random()
+  LIMIT $5
+),
+item_totals AS (
+  SELECT
+    sum(ordered_quantity * sale_price)::numeric(14,2) AS total_amount,
+    count(*)::integer AS items_count
+  FROM selected_products
+),
+new_order AS (
+  INSERT INTO customer_orders (
+    customer_id,
+    delivery_address,
+    created_at,
+    status,
+    delivery_window_start,
+    delivery_window_end,
+    delivery_priority,
+    total_amount,
+    items_count,
+    last_status_changed_at
+  )
+  SELECT
+    customer_id,
+    format($6, floor(random() * $7)::int, floor(random() * $8)::int),
+    now(),
+    $9::customer_order_status,
+    now() + interval $10,
+    now() + interval $11,
+    $12,
+    item_totals.total_amount,
+    item_totals.items_count,
+    now()
+  FROM selected_customer
+  CROSS JOIN item_totals
+  RETURNING customer_order_id, customer_id, delivery_address, created_at, status, total_amount, items_count
+),
+inserted_items AS (
+  INSERT INTO customer_order_items (
+    customer_order_id,
+    product_id,
+    ordered_quantity,
+    sale_price
+  )
+  SELECT
+    new_order.customer_order_id,
+    selected_products.product_id,
+    selected_products.ordered_quantity,
+    selected_products.sale_price
+  FROM new_order
+  JOIN selected_products ON $13
+  RETURNING customer_order_id, ordered_quantity, sale_price
+),
+inserted_audit_note AS (
+  INSERT INTO customer_order_audit_notes (
+    customer_order_id,
+    note_type,
+    note_text,
+    created_at
+  )
+  SELECT
+    new_order.customer_order_id,
+    $14,
+    $15,
+    now()
+  FROM new_order
+  RETURNING customer_order_id
+)
+SELECT
+  new_order.customer_order_id,
+  new_order.customer_id,
+  new_order.delivery_address,
+  new_order.created_at,
+  new_order.status::text AS status,
+  new_order.total_amount,
+  new_order.items_count,
+  count(inserted_items.customer_order_id) AS item_count
+FROM new_order
+LEFT JOIN inserted_items ON inserted_items.customer_order_id = new_order.customer_order_id
+LEFT JOIN inserted_audit_note ON inserted_audit_note.customer_order_id = new_order.customer_order_id
+GROUP BY
+  new_order.customer_order_id,
+  new_order.customer_id,
+  new_order.delivery_address,
+  new_order.created_at,
+  new_order.status,
+  new_order.total_amount,
+  new_order.items_count",73.95746245688058,6969,9195862,0
+"WITH selected_order AS (
+  SELECT customer_order_id, status AS old_status
+  FROM customer_orders
+  ORDER BY random()
+  LIMIT $2
+),
+inserted_event AS (
+  INSERT INTO order_status_events (
+    customer_order_id,
+    old_status,
+    new_status,
+    event_source,
+    created_at
+  )
+  SELECT
+    selected_order.customer_order_id,
+    selected_order.old_status,
+    $1::customer_order_status,
+    $3,
+    now()
+  FROM selected_order
+  RETURNING order_status_event_id, customer_order_id, created_at
+)
+SELECT
+  order_status_event_id,
+  customer_order_id,
+  created_at
+FROM inserted_event",17.000973504887785,15958,24066663,0
+"SELECT
+  co.customer_order_id,
+  co.customer_id,
+  c.full_name,
+  co.delivery_address,
+  co.created_at,
+  co.status::text AS status,
+  co.delivery_priority,
+  co.total_amount,
+  co.items_count,
+  audit_notes.audit_note_count,
+  audit_notes.last_audit_note,
+  coi.customer_order_item_id,
+  coi.ordered_quantity,
+  coi.sale_price,
+  p.product_id,
+  p.product_name,
+  b.brand_name,
+  pc.category_name
+FROM customer_orders co
+JOIN customers c ON c.customer_id = co.customer_id
+JOIN customer_order_items coi ON coi.customer_order_id = co.customer_order_id
+JOIN products p ON p.product_id = coi.product_id
+JOIN brands b ON b.brand_id = p.brand_id
+JOIN product_categories pc ON pc.category_id = p.category_id
+LEFT JOIN LATERAL (
+  SELECT
+    count(*) AS audit_note_count,
+    (array_agg(aon.note_text ORDER BY aon.created_at DESC))[$2] AS last_audit_note
+  FROM customer_order_audit_notes aon
+  WHERE aon.customer_order_id = co.customer_order_id
+) audit_notes ON $3
+WHERE co.customer_order_id = $1
+ORDER BY coi.customer_order_item_id",1.3131236907734238,6969,1054344,0
+SELECT pg_stat_statements_reset(),0.448544,1,0,0
+"WITH target_order AS (
+  SELECT customer_order_id, status AS old_status
+  FROM customer_orders
+  WHERE customer_order_id = $1
+  FOR UPDATE
+),
+updated_order AS (
+  UPDATE customer_orders co
+  SET status = $2::customer_order_status,
+      last_status_changed_at = now()
+  FROM target_order
+  WHERE co.customer_order_id = target_order.customer_order_id
+  RETURNING co.customer_order_id, co.status AS new_status
+),
+inserted_event AS (
+  INSERT INTO order_status_events (
+    customer_order_id,
+    old_status,
+    new_status,
+    event_source,
+    created_at
+  )
+  SELECT
+    target_order.customer_order_id,
+    target_order.old_status,
+    updated_order.new_status,
+    $3,
+    now()
+  FROM target_order
+  JOIN updated_order ON updated_order.customer_order_id = target_order.customer_order_id
+  RETURNING order_status_event_id
+),
+inserted_audit_note AS (
+  INSERT INTO customer_order_audit_notes (
+    customer_order_id,
+    note_type,
+    note_text,
+    created_at
+  )
+  SELECT
+    target_order.customer_order_id,
+    $4,
+    format($5, target_order.old_status, updated_order.new_status),
+    now()
+  FROM target_order
+  JOIN updated_order ON updated_order.customer_order_id = target_order.customer_order_id
+  RETURNING audit_note_id
+)
+SELECT
+  target_order.customer_order_id,
+  target_order.old_status::text AS old_status,
+  updated_order.new_status::text AS new_status,
+  inserted_event.order_status_event_id,
+  inserted_audit_note.audit_note_id
+FROM target_order
+JOIN updated_order ON updated_order.customer_order_id = target_order.customer_order_id
+JOIN inserted_event ON $6
+JOIN inserted_audit_note ON $7",0.44347526503084894,6969,272611,4
+"SELECT pg_catalog.pg_postmaster_start_time(), CASE WHEN pg_catalog.pg_is_in_recovery() THEN 0 ELSE ('x' || pg_catalog.substr(pg_catalog.pg_walfile_name(pg_catalog.pg_current_wal_lsn()), 1, 8))::bit(32)::int END, CASE WHEN pg_catalog.pg_is_in_recovery() THEN 0 ELSE pg_catalog.pg_wal_lsn_diff(pg_catalog.pg_current_wal_flush_lsn(), '0/0')::bigint END, pg_catalog.pg_wal_lsn_diff(pg_catalog.pg_last_wal_replay_lsn(), '0/0')::bigint, pg_catalog.pg_wal_lsn_diff(COALESCE(pg_catalog.pg_last_wal_receive_lsn(), '0/0'), '0/0')::bigint, pg_catalog.pg_is_in_recovery() AND pg_catalog.pg_is_wal_replay_paused(), pg_catalog.pg_last_xact_replay_timestamp(), (pg_catalog.pg_stat_get_wal_receiver()).status, pg_catalog.current_setting('restore_command'), pg_catalog.array_to_json(pg_catalog.array_agg(pg_catalog.row_to_json(ri))) FROM (SELECT (SELECT rolname FROM pg_catalog.pg_authid WHERE oid = usesysid) AS usename, application_name, client_addr, w.state, sync_state, sync_priority FROM pg_catalog.pg_stat_get_wal_senders() w, pg_catalog.pg_stat_get_activity(pid)) AS ri",0.2468703484848484,198,198,0
+"SELECT CASE WHEN pg_catalog.pg_is_in_recovery() THEN 0 ELSE ('x' || pg_catalog.substr(pg_catalog.pg_walfile_name(pg_catalog.pg_current_wal_lsn()), 1, 8))::bit(32)::int END, CASE WHEN pg_catalog.pg_is_in_recovery() THEN 0 ELSE pg_catalog.pg_wal_lsn_diff(pg_catalog.pg_current_wal_flush_lsn(), '0/0')::bigint END, pg_catalog.pg_wal_lsn_diff(pg_catalog.pg_last_wal_replay_lsn(), '0/0')::bigint, pg_catalog.pg_wal_lsn_diff(COALESCE(pg_catalog.pg_last_wal_receive_lsn(), '0/0'), '0/0')::bigint, pg_catalog.pg_is_in_recovery() AND pg_catalog.pg_is_wal_replay_paused(), 0, CASE WHEN latest_end_lsn IS NULL THEN NULL ELSE received_tli END, slot_name, conninfo, status, pg_catalog.current_setting('restore_command'), (SELECT pg_catalog.json_agg(s.*) FROM (SELECT slot_name, slot_type as type, datoid::bigint, plugin, catalog_xmin, pg_catalog.pg_wal_lsn_diff(confirmed_flush_lsn, '0/0')::bigint AS confirmed_flush_lsn, pg_catalog.pg_wal_lsn_diff(restart_lsn, '0/0')::bigint AS restart_lsn, xmin FROM pg_catalog.pg_get_replication_slots()) AS s), 'on', '', NULL FROM pg_catalog.pg_stat_get_wal_receiver()",0.06987821428571427,28,0,0
+SELECT customer_order_id FROM customer_orders ORDER BY customer_order_id LIMIT $1,0.037904,1,4,0
+"SELECT $2 FROM ONLY ""public"".""customers"" x WHERE ""customer_id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",0.02213380542402069,6969,34845,0
+"SELECT $2 FROM ONLY ""public"".""customer_orders"" x WHERE ""customer_order_id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",0.01210025941632627,57772,235241,0
+"SELECT $2 FROM ONLY ""public"".""products"" x WHERE ""product_id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",0.007844862964557348,20907,104535,0

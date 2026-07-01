@@ -1,0 +1,31 @@
+Aggregate  (cost=3087.71..3087.72 rows=1 width=8) (actual time=609.206..609.219 rows=1 loops=1)
+  Output: count(*)
+  Buffers: shared hit=1281 dirtied=5
+  CTE selected_order
+    ->  Limit  (cost=3087.66..3087.66 rows=1 width=20) (actual time=600.536..600.546 rows=1 loops=1)
+          Output: customer_orders.customer_order_id, customer_orders.status, (random())
+          Buffers: shared hit=1219
+          ->  Sort  (cost=3087.66..3355.04 rows=106952 width=20) (actual time=600.527..600.531 rows=1 loops=1)
+                Output: customer_orders.customer_order_id, customer_orders.status, (random())
+                Sort Key: (random())
+                Sort Method: top-N heapsort  Memory: 25kB
+                Buffers: shared hit=1219
+                ->  Seq Scan on public.customer_orders  (cost=0.00..2552.90 rows=106952 width=20) (actual time=0.265..339.443 rows=103163 loops=1)
+                      Output: customer_orders.customer_order_id, customer_orders.status, random()
+                      Buffers: shared hit=1216
+  CTE inserted_event
+    ->  Insert on public.order_status_events  (cost=0.00..0.03 rows=1 width=64) (actual time=609.149..609.163 rows=1 loops=1)
+          Output: order_status_events.order_status_event_id
+          Buffers: shared hit=1281 dirtied=5
+          ->  CTE Scan on selected_order  (cost=0.00..0.03 rows=1 width=64) (actual time=601.416..601.424 rows=1 loops=1)
+                Output: nextval('order_status_events_order_status_event_id_seq'::regclass), selected_order.customer_order_id, selected_order.old_status, 'shipped'::customer_order_status, 'collect-profiling'::text, now()
+                Buffers: shared hit=1232 dirtied=1
+  ->  CTE Scan on inserted_event  (cost=0.00..0.02 rows=1 width=0) (actual time=609.166..609.181 rows=1 loops=1)
+        Output: inserted_event.order_status_event_id
+        Buffers: shared hit=1281 dirtied=5
+Query Identifier: 1482231323587801785
+Planning:
+  Buffers: shared hit=133
+Planning Time: 4.972 ms
+Trigger RI_ConstraintTrigger_c_17918 for constraint order_status_events_customer_order_id_fkey: time=9.952 calls=1
+Execution Time: 620.399 ms

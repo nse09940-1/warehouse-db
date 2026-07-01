@@ -1,0 +1,88 @@
+Limit  (cost=9510886.53..9512198.78 rows=100 width=108) (actual time=1799.057..1845.337 rows=100 loops=1)
+  Output: ((date_trunc('day'::text, co.created_at))::date), pc.category_name, (count(DISTINCT co.customer_order_id)), (sum((sum((coi.ordered_quantity * coi.sale_price))))), (sum(COALESCE(audit_counts.audit_note_count, '0'::bigint)))
+  Buffers: shared hit=57722 dirtied=41, temp read=3879 written=8244
+  ->  Incremental Sort  (cost=9510886.53..10035787.12 rows=40000 width=108) (actual time=1504.132..1550.405 rows=100 loops=1)
+        Output: ((date_trunc('day'::text, co.created_at))::date), pc.category_name, (count(DISTINCT co.customer_order_id)), (sum((sum((coi.ordered_quantity * coi.sale_price))))), (sum(COALESCE(audit_counts.audit_note_count, '0'::bigint)))
+        Sort Key: ((date_trunc('day'::text, co.created_at))::date) DESC, (sum((sum((coi.ordered_quantity * coi.sale_price))))) DESC
+        Presorted Key: ((date_trunc('day'::text, co.created_at))::date)
+        Full-sort Groups: 4  Sort Method: quicksort  Average Memory: 27kB  Peak Memory: 27kB
+        Buffers: shared hit=57722 dirtied=41, temp read=3879 written=8244
+        ->  GroupAggregate  (cost=9508251.37..10033754.35 rows=40000 width=108) (actual time=1478.117..1550.280 rows=105 loops=1)
+              Output: ((date_trunc('day'::text, co.created_at))::date), pc.category_name, count(DISTINCT co.customer_order_id), sum((sum((coi.ordered_quantity * coi.sale_price)))), sum(COALESCE(audit_counts.audit_note_count, '0'::bigint))
+              Group Key: ((date_trunc('day'::text, co.created_at))::date), pc.category_name
+              Buffers: shared hit=57716 dirtied=41, temp read=3879 written=8244
+              ->  Sort  (cost=9508251.37..9595735.20 rows=34993532 width=84) (actual time=1476.749..1530.269 rows=232452 loops=1)
+                    Output: ((date_trunc('day'::text, co.created_at))::date), pc.category_name, co.customer_order_id, (sum((coi.ordered_quantity * coi.sale_price))), audit_counts.audit_note_count
+                    Sort Key: ((date_trunc('day'::text, co.created_at))::date) DESC, pc.category_name, co.customer_order_id
+                    Sort Method: external merge  Disk: 16744kB
+                    Buffers: shared hit=57716 dirtied=41, temp read=3879 written=8244
+                    ->  Hash Left Join  (cost=78732.77..99965.47 rows=34993532 width=84) (actual time=982.130..1212.194 rows=422451 loops=1)
+                          Output: ((date_trunc('day'::text, co.created_at))::date), pc.category_name, co.customer_order_id, (sum((coi.ordered_quantity * coi.sale_price))), audit_counts.audit_note_count
+                          Inner Unique: true
+                          Hash Cond: (co.customer_order_id = audit_counts.customer_order_id)
+                          Buffers: shared hit=57713 dirtied=41, temp read=2475 written=6143
+                          ->  HashAggregate  (cost=77684.05..93500.66 rows=427115 width=76) (actual time=975.079..1163.433 rows=422451 loops=1)
+                                Output: co.customer_order_id, ((date_trunc('day'::text, co.created_at))::date), pc.category_name, sum((coi.ordered_quantity * coi.sale_price))
+                                Group Key: co.customer_order_id, (date_trunc('day'::text, co.created_at))::date, pc.category_name
+                                Planned Partitions: 32  Batches: 33  Memory Usage: 8209kB  Disk Usage: 30368kB
+                                Buffers: shared hit=57451 dirtied=41, temp read=2475 written=6143
+                                ->  Hash Join  (cost=4378.20..30434.46 rows=427115 width=54) (actual time=23.482..796.391 rows=425419 loops=1)
+                                      Output: co.customer_order_id, (date_trunc('day'::text, co.created_at))::date, pc.category_name, coi.ordered_quantity, coi.sale_price
+                                      Inner Unique: true
+                                      Hash Cond: (p.category_id = pc.category_id)
+                                      Buffers: shared hit=57451 dirtied=41
+                                      ->  Hash Join  (cost=4341.20..27136.75 rows=427115 width=34) (actual time=23.427..699.083 rows=425419 loops=1)
+                                            Output: co.customer_order_id, co.created_at, coi.ordered_quantity, coi.sale_price, p.category_id
+                                            Inner Unique: true
+                                            Hash Cond: (coi.customer_order_id = co.customer_order_id)
+                                            Buffers: shared hit=57450 dirtied=41
+                                            ->  Merge Join  (cost=1.39..21675.71 rows=427115 width=26) (actual time=0.045..609.031 rows=425419 loops=1)
+                                                  Output: coi.ordered_quantity, coi.sale_price, coi.customer_order_id, p.category_id
+                                                  Inner Unique: true
+                                                  Merge Cond: (coi.product_id = p.product_id)
+                                                  Buffers: shared hit=56134 dirtied=33
+                                                  ->  Index Scan using idx_customer_order_items_product_id on public.customer_order_items coi  (cost=0.42..12582.15 rows=427115 width=26) (actual time=0.016..517.676 rows=425419 loops=1)
+                                                        Output: coi.customer_order_item_id, coi.customer_order_id, coi.product_id, coi.ordered_quantity, coi.sale_price
+                                                        Buffers: shared hit=53719 dirtied=33
+                                                  ->  Index Scan using products_pkey on public.products p  (cost=0.42..7073.42 rows=200000 width=16) (actual time=0.015..34.252 rows=200000 loops=1)
+                                                        Output: p.product_id, p.category_id, p.brand_id, p.product_name, p.unit_of_measure
+                                                        Buffers: shared hit=2415
+                                            ->  Hash  (cost=2965.36..2965.36 rows=109957 width=16) (actual time=22.887..22.888 rows=108473 loops=1)
+                                                  Output: co.customer_order_id, co.created_at
+                                                  Buckets: 131072  Batches: 1  Memory Usage: 6109kB
+                                                  Buffers: shared hit=1316 dirtied=8
+                                                  ->  Seq Scan on public.customer_orders co  (cost=0.00..2965.36 rows=109957 width=16) (actual time=0.012..11.842 rows=108473 loops=1)
+                                                        Output: co.customer_order_id, co.created_at
+                                                        Filter: ((co.created_at >= '2020-01-01 00:00:00+00'::timestamp with time zone) AND (co.created_at < '2100-01-01 00:00:00+00'::timestamp with time zone))
+                                                        Buffers: shared hit=1316 dirtied=8
+                                      ->  Hash  (cost=22.00..22.00 rows=1200 width=40) (actual time=0.040..0.041 rows=8 loops=1)
+                                            Output: pc.category_name, pc.category_id
+                                            Buckets: 2048  Batches: 1  Memory Usage: 17kB
+                                            Buffers: shared hit=1
+                                            ->  Seq Scan on public.product_categories pc  (cost=0.00..22.00 rows=1200 width=40) (actual time=0.027..0.029 rows=8 loops=1)
+                                                  Output: pc.category_name, pc.category_id
+                                                  Buffers: shared hit=1
+                          ->  Hash  (cost=843.90..843.90 rows=16386 width=16) (actual time=6.922..6.923 rows=16388 loops=1)
+                                Output: audit_counts.audit_note_count, audit_counts.customer_order_id
+                                Buckets: 32768  Batches: 1  Memory Usage: 1025kB
+                                Buffers: shared hit=262
+                                ->  Subquery Scan on audit_counts  (cost=516.18..843.90 rows=16386 width=16) (actual time=3.539..5.421 rows=16388 loops=1)
+                                      Output: audit_counts.audit_note_count, audit_counts.customer_order_id
+                                      Buffers: shared hit=262
+                                      ->  HashAggregate  (cost=516.18..680.04 rows=16386 width=16) (actual time=3.536..4.662 rows=16388 loops=1)
+                                            Output: customer_order_audit_notes.customer_order_id, count(*)
+                                            Group Key: customer_order_audit_notes.customer_order_id
+                                            Batches: 1  Memory Usage: 2065kB
+                                            Buffers: shared hit=262
+                                            ->  Seq Scan on public.customer_order_audit_notes  (cost=0.00..431.45 rows=16945 width=8) (actual time=0.009..0.918 rows=16947 loops=1)
+                                                  Output: customer_order_audit_notes.audit_note_id, customer_order_audit_notes.customer_order_id, customer_order_audit_notes.note_type, customer_order_audit_notes.note_text, customer_order_audit_notes.created_at
+                                                  Buffers: shared hit=262
+Query Identifier: -4609191656841599242
+Planning:
+  Buffers: shared hit=484
+Planning Time: 1.307 ms
+JIT:
+  Functions: 50
+  Options: Inlining true, Optimization true, Expressions true, Deforming true
+  Timing: Generation 1.850 ms, Inlining 85.761 ms, Optimization 120.821 ms, Emission 117.386 ms, Total 325.818 ms
+Execution Time: 2114.590 ms

@@ -20,5 +20,7 @@
     <include file="migrations/011_idx_audit_notes_order_created.sql" relativeToChangelogFile="true"/>
     <include file="migrations/012_idx_audit_notes_created_brin.sql" relativeToChangelogFile="true"/>
     <include file="migrations/013_mv_revenue_by_day_category.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/014_idx_inventory_movements_moved_warehouse_product.sql" relativeToChangelogFile="true"/>
+    <include file="migrations/015_bi_cdc_setup.sql" relativeToChangelogFile="true"/>
 
 </databaseChangeLog>

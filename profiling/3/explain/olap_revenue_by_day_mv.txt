@@ -1,0 +1,17 @@
+Limit  (cost=15.64..15.89 rows=100 width=34) (actual time=0.094..0.102 rows=100 loops=1)
+  Output: sales_day, category_name, order_count, revenue, audit_note_count
+  Buffers: shared hit=10
+  ->  Sort  (cost=15.64..16.14 rows=200 width=34) (actual time=0.094..0.096 rows=100 loops=1)
+        Output: sales_day, category_name, order_count, revenue, audit_note_count
+        Sort Key: mv_revenue_by_day_category.sales_day DESC, mv_revenue_by_day_category.revenue DESC
+        Sort Method: quicksort  Memory: 39kB
+        Buffers: shared hit=10
+        ->  Seq Scan on public.mv_revenue_by_day_category  (cost=0.00..8.00 rows=200 width=34) (actual time=0.008..0.034 rows=200 loops=1)
+              Output: sales_day, category_name, order_count, revenue, audit_note_count
+              Filter: ((mv_revenue_by_day_category.sales_day >= ('2020-01-01 00:00:00+00'::timestamp with time zone)::date) AND (mv_revenue_by_day_category.sales_day < ('2100-01-01 00:00:00+00'::timestamp with time zone)::date))
+              Buffers: shared hit=4
+Query Identifier: 5878942810545630722
+Planning:
+  Buffers: shared hit=118
+Planning Time: 0.282 ms
+Execution Time: 0.123 ms

@@ -32,12 +32,7 @@ BEGIN
     );
   END IF;
 
-  BEGIN
-    EXECUTE format('GRANT pg_monitor TO %I', exporter_user);
-  EXCEPTION
-    WHEN insufficient_privilege THEN
-      RAISE NOTICE 'Skipping pg_monitor grant for %, current role lacks admin option', exporter_user;
-  END;
+  EXECUTE format('GRANT pg_monitor TO %I', exporter_user);
   EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), exporter_user);
 END $$;
 

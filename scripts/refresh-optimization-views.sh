@@ -7,8 +7,15 @@ source "${SCRIPT_DIR}/common.sh"
 
 require_env POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD
 
-psql_for_db "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -c "
-REFRESH MATERIALIZED VIEW CONCURRENTLY mv_revenue_by_day_category;
-"
+if ! psql_for_db "${POSTGRES_DB}" -tAc \
+  "SELECT 1 FROM pg_matviews WHERE matviewname = 'mv_revenue_by_day_category' LIMIT 1;" \
+  | grep -q "1"; then
+  echo "Materialized view mv_revenue_by_day_category does not exist. Skipping refresh."
+  exit 0
+fi
 
-echo "Optimization materialized views refreshed."
+echo "Refreshing mv_revenue_by_day_category (CONCURRENTLY)"
+psql_for_db "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -c \
+  "REFRESH MATERIALIZED VIEW CONCURRENTLY mv_revenue_by_day_category;"
+
+echo "Refresh completed."

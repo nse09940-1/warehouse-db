@@ -1,0 +1,89 @@
+Sort  (cost=70049.28..70224.28 rows=70000 width=180) (actual time=24035.221..25398.957 rows=200000 loops=1)
+  Output: movement_totals.warehouse_id, movement_totals.warehouse_name, movement_totals.product_id, movement_totals.product_name, movement_totals.received_quantity, movement_totals.shipped_quantity, movement_totals.adjusted_quantity, (((movement_totals.received_quantity + movement_totals.shipped_quantity) + movement_totals.adjusted_quantity)), (dense_rank() OVER (?))
+  Sort Key: movement_totals.warehouse_name, (dense_rank() OVER (?)), movement_totals.product_name
+  Sort Method: external merge  Disk: 16064kB
+  Buffers: shared hit=4956, temp read=3713 written=3723
+  ->  WindowAgg  (cost=26021.66..58193.01 rows=70000 width=180) (actual time=3357.891..17678.460 rows=200000 loops=1)
+        Output: movement_totals.warehouse_id, movement_totals.warehouse_name, movement_totals.product_id, movement_totals.product_name, movement_totals.received_quantity, movement_totals.shipped_quantity, movement_totals.adjusted_quantity, (((movement_totals.received_quantity + movement_totals.shipped_quantity) + movement_totals.adjusted_quantity)), dense_rank() OVER (?)
+        Run Condition: (dense_rank() OVER (?) <= 10)
+        Buffers: shared hit=4953, temp read=1705 written=1710
+        ->  Incremental Sort  (cost=26021.66..56618.01 rows=70000 width=172) (actual time=3357.794..15803.666 rows=200000 loops=1)
+              Output: movement_totals.warehouse_id, (((movement_totals.received_quantity + movement_totals.shipped_quantity) + movement_totals.adjusted_quantity)), movement_totals.warehouse_name, movement_totals.product_id, movement_totals.product_name, movement_totals.received_quantity, movement_totals.shipped_quantity, movement_totals.adjusted_quantity
+              Sort Key: movement_totals.warehouse_id, (((movement_totals.received_quantity + movement_totals.shipped_quantity) + movement_totals.adjusted_quantity)) DESC
+              Presorted Key: movement_totals.warehouse_id
+              Full-sort Groups: 5000  Sort Method: quicksort  Average Memory: 28kB  Peak Memory: 28kB
+              Buffers: shared hit=4953, temp read=1705 written=1710
+              ->  Subquery Scan on movement_totals  (cost=25872.33..52781.08 rows=70000 width=172) (actual time=3355.746..14349.996 rows=200000 loops=1)
+                    Output: movement_totals.warehouse_id, ((movement_totals.received_quantity + movement_totals.shipped_quantity) + movement_totals.adjusted_quantity), movement_totals.warehouse_name, movement_totals.product_id, movement_totals.product_name, movement_totals.received_quantity, movement_totals.shipped_quantity, movement_totals.adjusted_quantity
+                    Buffers: shared hit=4950, temp read=1705 written=1710
+                    ->  Finalize GroupAggregate  (cost=25872.33..52431.08 rows=70000 width=140) (actual time=3355.732..13242.131 rows=200000 loops=1)
+                          Output: w.warehouse_id, w.warehouse_name, p.product_id, p.product_name, sum(CASE WHEN (im.movement_type = 'receipt'::inventory_movement_type) THEN im.quantity ELSE '0'::numeric END), sum(CASE WHEN (im.movement_type = 'shipment'::inventory_movement_type) THEN im.quantity ELSE '0'::numeric END), sum(CASE WHEN (im.movement_type = ANY ('{write_off,adjustment}'::inventory_movement_type[])) THEN im.quantity ELSE '0'::numeric END)
+                          Group Key: w.warehouse_id, p.product_id
+                          Filter: (((sum(CASE WHEN (im.movement_type = 'receipt'::inventory_movement_type) THEN im.quantity ELSE '0'::numeric END) + sum(CASE WHEN (im.movement_type = 'shipment'::inventory_movement_type) THEN im.quantity ELSE '0'::numeric END)) + sum(CASE WHEN (im.movement_type = ANY ('{write_off,adjustment}'::inventory_movement_type[])) THEN im.quantity ELSE '0'::numeric END)) >= '1'::numeric)
+                          Buffers: shared hit=4950, temp read=1705 written=1710
+                          ->  Gather Merge  (cost=25872.33..44710.50 rows=123529 width=140) (actual time=3355.638..7752.651 rows=205480 loops=1)
+                                Output: w.warehouse_id, p.product_id, w.warehouse_name, p.product_name, (PARTIAL sum(CASE WHEN (im.movement_type = 'receipt'::inventory_movement_type) THEN im.quantity ELSE '0'::numeric END)), (PARTIAL sum(CASE WHEN (im.movement_type = 'shipment'::inventory_movement_type) THEN im.quantity ELSE '0'::numeric END)), (PARTIAL sum(CASE WHEN (im.movement_type = ANY ('{write_off,adjustment}'::inventory_movement_type[])) THEN im.quantity ELSE '0'::numeric END))
+                                Workers Planned: 1
+                                Workers Launched: 1
+                                Buffers: shared hit=4950, temp read=1705 written=1710
+                                ->  Partial GroupAggregate  (cost=24872.32..29813.48 rows=123529 width=140) (actual time=3152.418..5615.653 rows=102740 loops=2)
+                                      Output: w.warehouse_id, p.product_id, w.warehouse_name, p.product_name, PARTIAL sum(CASE WHEN (im.movement_type = 'receipt'::inventory_movement_type) THEN im.quantity ELSE '0'::numeric END), PARTIAL sum(CASE WHEN (im.movement_type = 'shipment'::inventory_movement_type) THEN im.quantity ELSE '0'::numeric END), PARTIAL sum(CASE WHEN (im.movement_type = ANY ('{write_off,adjustment}'::inventory_movement_type[])) THEN im.quantity ELSE '0'::numeric END)
+                                      Group Key: w.warehouse_id, p.product_id
+                                      Buffers: shared hit=4950, temp read=1705 written=1710
+                                      Worker 0:  actual time=3082.236..4712.567 rows=83061 loops=1
+                                        Buffers: shared hit=1981, temp read=691 written=693
+                                      ->  Sort  (cost=24872.32..25181.14 rows=123529 width=53) (actual time=3152.305..3474.088 rows=105000 loops=2)
+                                            Output: w.warehouse_id, p.product_id, w.warehouse_name, p.product_name, im.movement_type, im.quantity
+                                            Sort Key: w.warehouse_id, p.product_id
+                                            Sort Method: external merge  Disk: 8112kB
+                                            Buffers: shared hit=4950, temp read=1705 written=1710
+                                            Worker 0:  actual time=3082.099..3252.665 rows=84836 loops=1
+                                              Sort Method: external merge  Disk: 5528kB
+                                              Buffers: shared hit=1981, temp read=691 written=693
+                                            ->  Parallel Hash Join  (cost=4812.06..10200.67 rows=123529 width=53) (actual time=943.441..2262.823 rows=105000 loops=2)
+                                                  Output: w.warehouse_id, p.product_id, w.warehouse_name, p.product_name, im.movement_type, im.quantity
+                                                  Inner Unique: true
+                                                  Hash Cond: (im.product_id = p.product_id)
+                                                  Buffers: shared hit=4913
+                                                  Worker 0:  actual time=876.686..2207.223 rows=84836 loops=1
+                                                    Buffers: shared hit=1944
+                                                  ->  Hash Join  (cost=299.00..5363.34 rows=123529 width=39) (actual time=113.901..893.983 rows=105000 loops=2)
+                                                        Output: im.movement_type, im.quantity, im.product_id, w.warehouse_id, w.warehouse_name
+                                                        Inner Unique: true
+                                                        Hash Cond: (im.warehouse_id = w.warehouse_id)
+                                                        Buffers: shared hit=3035
+                                                        Worker 0:  actual time=116.838..892.400 rows=84836 loops=1
+                                                          Buffers: shared hit=1095
+                                                        ->  Parallel Seq Scan on public.inventory_movements im  (cost=0.00..4739.94 rows=123529 width=25) (actual time=34.010..356.294 rows=105000 loops=2)
+                                                              Output: im.inventory_movement_id, im.product_id, im.warehouse_id, im.movement_type, im.quantity, im.moved_at, im.employee_id
+                                                              Filter: ((im.moved_at >= '2020-01-01 00:00:00+00'::timestamp with time zone) AND (im.moved_at < '2100-01-01 00:00:00+00'::timestamp with time zone))
+                                                              Buffers: shared hit=2887
+                                                              Worker 0:  actual time=35.723..310.471 rows=84836 loops=1
+                                                                Buffers: shared hit=1021
+                                                        ->  Hash  (cost=174.00..174.00 rows=10000 width=22) (actual time=79.055..79.061 rows=10000 loops=2)
+                                                              Output: w.warehouse_id, w.warehouse_name
+                                                              Buckets: 16384  Batches: 1  Memory Usage: 665kB
+                                                              Buffers: shared hit=148
+                                                              Worker 0:  actual time=80.344..80.349 rows=10000 loops=1
+                                                                Buffers: shared hit=74
+                                                              ->  Seq Scan on public.warehouses w  (cost=0.00..174.00 rows=10000 width=22) (actual time=0.175..34.387 rows=10000 loops=2)
+                                                                    Output: w.warehouse_id, w.warehouse_name
+                                                                    Buffers: shared hit=148
+                                                                    Worker 0:  actual time=0.278..38.890 rows=10000 loops=1
+                                                                      Buffers: shared hit=74
+                                                  ->  Parallel Hash  (cost=3042.47..3042.47 rows=117647 width=22) (actual time=813.138..813.140 rows=100000 loops=2)
+                                                        Output: p.product_id, p.product_name
+                                                        Buckets: 262144  Batches: 1  Memory Usage: 13056kB
+                                                        Buffers: shared hit=1866
+                                                        Worker 0:  actual time=759.049..759.051 rows=89464 loops=1
+                                                          Buffers: shared hit=837
+                                                        ->  Parallel Seq Scan on public.products p  (cost=0.00..3042.47 rows=117647 width=22) (actual time=0.103..266.176 rows=100000 loops=2)
+                                                              Output: p.product_id, p.product_name
+                                                              Buffers: shared hit=1866
+                                                              Worker 0:  actual time=0.138..236.539 rows=89464 loops=1
+                                                                Buffers: shared hit=837
+Query Identifier: -234779843507131666
+Planning:
+  Buffers: shared hit=320
+Planning Time: 46.546 ms
+Execution Time: 25565.455 ms

@@ -107,6 +107,26 @@ liquibase_for_db() {
     java_opts="${java_opts} -DpostgresExporterPassword=${POSTGRES_EXPORTER_PASSWORD}"
   fi
 
+  if [[ -n "${DEBEZIUM_USER:-}" ]]; then
+    java_opts="${java_opts} -DdebeziumUser=${DEBEZIUM_USER}"
+  fi
+
+  if [[ -n "${DEBEZIUM_PASSWORD:-}" ]]; then
+    java_opts="${java_opts} -DdebeziumPassword=${DEBEZIUM_PASSWORD}"
+  fi
+
+  if [[ -n "${DEBEZIUM_PUBLICATION_NAME:-}" ]]; then
+    java_opts="${java_opts} -DdebeziumPublicationName=${DEBEZIUM_PUBLICATION_NAME}"
+  fi
+
+  if [[ -n "${METABASE_DB_USER:-}" ]]; then
+    java_opts="${java_opts} -DmetabaseDbUser=${METABASE_DB_USER}"
+  fi
+
+  if [[ -n "${METABASE_DB_PASSWORD:-}" ]]; then
+    java_opts="${java_opts} -DmetabaseDbPassword=${METABASE_DB_PASSWORD}"
+  fi
+
   JAVA_OPTS="${java_opts# }" liquibase \
     --changelog-file="${changelog_file}" \
     --search-path="${WORKSPACE_DIR}" \

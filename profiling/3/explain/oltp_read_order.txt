@@ -1,0 +1,69 @@
+Sort  (cost=75.56..75.57 rows=4 width=227) (actual time=1.161..1.163 rows=4 loops=1)
+  Output: co.customer_order_id, co.customer_id, c.full_name, co.delivery_address, co.created_at, ((co.status)::text), co.delivery_priority, co.total_amount, co.items_count, (count(*)), ((array_agg(aon.note_text ORDER BY aon.created_at DESC))[1]), coi.customer_order_item_id, coi.ordered_quantity, coi.sale_price, p.product_id, p.product_name, b.brand_name, pc.category_name
+  Sort Key: coi.customer_order_item_id
+  Sort Method: quicksort  Memory: 25kB
+  Buffers: shared hit=57
+  ->  Nested Loop Left Join  (cost=10.19..75.52 rows=4 width=227) (actual time=1.121..1.141 rows=4 loops=1)
+        Output: co.customer_order_id, co.customer_id, c.full_name, co.delivery_address, co.created_at, (co.status)::text, co.delivery_priority, co.total_amount, co.items_count, (count(*)), ((array_agg(aon.note_text ORDER BY aon.created_at DESC))[1]), coi.customer_order_item_id, coi.ordered_quantity, coi.sale_price, p.product_id, p.product_name, b.brand_name, pc.category_name
+        Buffers: shared hit=54
+        ->  Nested Loop  (cost=1.87..60.84 rows=4 width=159) (actual time=0.570..0.587 rows=4 loops=1)
+              Output: co.customer_order_id, co.customer_id, co.delivery_address, co.created_at, co.status, co.delivery_priority, co.total_amount, co.items_count, c.full_name, coi.customer_order_item_id, coi.ordered_quantity, coi.sale_price, p.product_id, p.product_name, b.brand_name, pc.category_name
+              Inner Unique: true
+              Buffers: shared hit=49
+              ->  Nested Loop  (cost=1.72..60.16 rows=4 width=135) (actual time=0.557..0.571 rows=4 loops=1)
+                    Output: co.customer_order_id, co.customer_id, co.delivery_address, co.created_at, co.status, co.delivery_priority, co.total_amount, co.items_count, c.full_name, coi.customer_order_item_id, coi.ordered_quantity, coi.sale_price, p.product_id, p.product_name, p.category_id, b.brand_name
+                    Inner Unique: true
+                    Buffers: shared hit=41
+                    ->  Nested Loop  (cost=1.43..58.90 rows=4 width=132) (actual time=0.546..0.555 rows=4 loops=1)
+                          Output: co.customer_order_id, co.customer_id, co.delivery_address, co.created_at, co.status, co.delivery_priority, co.total_amount, co.items_count, c.full_name, coi.customer_order_item_id, coi.ordered_quantity, coi.sale_price, p.product_id, p.product_name, p.brand_id, p.category_id
+                          Inner Unique: true
+                          Buffers: shared hit=29
+                          ->  Nested Loop  (cost=1.01..25.15 rows=4 width=102) (actual time=0.524..0.528 rows=4 loops=1)
+                                Output: co.customer_order_id, co.customer_id, co.delivery_address, co.created_at, co.status, co.delivery_priority, co.total_amount, co.items_count, c.full_name, coi.customer_order_item_id, coi.ordered_quantity, coi.sale_price, coi.product_id
+                                Buffers: shared hit=13
+                                ->  Nested Loop  (cost=0.58..16.62 rows=1 width=76) (actual time=0.042..0.043 rows=1 loops=1)
+                                      Output: co.customer_order_id, co.customer_id, co.delivery_address, co.created_at, co.status, co.delivery_priority, co.total_amount, co.items_count, c.full_name
+                                      Inner Unique: true
+                                      Buffers: shared hit=9
+                                      ->  Index Scan using customer_orders_pkey on public.customer_orders co  (cost=0.29..8.31 rows=1 width=62) (actual time=0.032..0.033 rows=1 loops=1)
+                                            Output: co.customer_order_id, co.customer_id, co.delivery_address, co.created_at, co.status, co.delivery_window_start, co.delivery_window_end, co.delivery_priority, co.total_amount, co.items_count, co.last_status_changed_at
+                                            Index Cond: (co.customer_order_id = 400001)
+                                            Buffers: shared hit=6
+                                      ->  Index Scan using customers_pkey on public.customers c  (cost=0.29..8.31 rows=1 width=22) (actual time=0.007..0.007 rows=1 loops=1)
+                                            Output: c.customer_id, c.full_name, c.email, c.phone, c.created_at
+                                            Index Cond: (c.customer_id = co.customer_id)
+                                            Buffers: shared hit=3
+                                ->  Index Scan using idx_customer_order_items_order_id on public.customer_order_items coi  (cost=0.42..8.49 rows=4 width=34) (actual time=0.480..0.482 rows=4 loops=1)
+                                      Output: coi.customer_order_item_id, coi.customer_order_id, coi.product_id, coi.ordered_quantity, coi.sale_price
+                                      Index Cond: (coi.customer_order_id = 400001)
+                                      Buffers: shared hit=4
+                          ->  Index Scan using products_pkey on public.products p  (cost=0.42..8.44 rows=1 width=38) (actual time=0.006..0.006 rows=1 loops=4)
+                                Output: p.product_id, p.category_id, p.brand_id, p.product_name, p.unit_of_measure
+                                Index Cond: (p.product_id = coi.product_id)
+                                Buffers: shared hit=16
+                    ->  Index Scan using brands_pkey on public.brands b  (cost=0.29..0.31 rows=1 width=19) (actual time=0.003..0.003 rows=1 loops=4)
+                          Output: b.brand_id, b.brand_name
+                          Index Cond: (b.brand_id = p.brand_id)
+                          Buffers: shared hit=12
+              ->  Index Scan using product_categories_pkey on public.product_categories pc  (cost=0.15..0.17 rows=1 width=40) (actual time=0.003..0.003 rows=1 loops=4)
+                    Output: pc.category_id, pc.category_name
+                    Index Cond: (pc.category_id = p.category_id)
+                    Buffers: shared hit=8
+        ->  Memoize  (cost=8.32..8.33 rows=1 width=40) (actual time=0.005..0.005 rows=1 loops=4)
+              Output: (count(*)), ((array_agg(aon.note_text ORDER BY aon.created_at DESC))[1])
+              Cache Key: co.customer_order_id
+              Cache Mode: binary
+              Hits: 3  Misses: 1  Evictions: 0  Overflows: 0  Memory Usage: 1kB
+              Buffers: shared hit=2
+              ->  Aggregate  (cost=8.31..8.32 rows=1 width=40) (actual time=0.016..0.016 rows=1 loops=1)
+                    Output: count(*), (array_agg(aon.note_text ORDER BY aon.created_at DESC))[1]
+                    Buffers: shared hit=2
+                    ->  Index Scan using idx_customer_order_audit_notes_order_created on public.customer_order_audit_notes aon  (cost=0.29..8.30 rows=1 width=60) (actual time=0.013..0.013 rows=0 loops=1)
+                          Output: aon.audit_note_id, aon.customer_order_id, aon.note_type, aon.note_text, aon.created_at
+                          Index Cond: (aon.customer_order_id = co.customer_order_id)
+                          Buffers: shared hit=2
+Query Identifier: 5560025136125579206
+Planning:
+  Buffers: shared hit=538
+Planning Time: 5.649 ms
+Execution Time: 1.584 ms

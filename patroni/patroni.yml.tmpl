@@ -20,7 +20,7 @@ bootstrap:
       use_pg_rewind: true
       use_slots: true
       parameters:
-        wal_level: replica
+        wal_level: logical
         hot_standby: "on"
         wal_log_hints: "on"
         max_connections: 200
@@ -36,13 +36,14 @@ bootstrap:
     - data-checksums
   pg_hba:
     - host all all 0.0.0.0/0 scram-sha-256
+    - host all ${PATRONI_DEBEZIUM_USERNAME} 0.0.0.0/0 scram-sha-256
     - host replication ${PATRONI_REPLICATION_USERNAME} 0.0.0.0/0 scram-sha-256
+    - host replication ${PATRONI_DEBEZIUM_USERNAME} 0.0.0.0/0 scram-sha-256
   users:
     ${POSTGRES_USER}:
       password: ${POSTGRES_PASSWORD}
       options:
         - createdb
-        - createrole
   post_bootstrap: /opt/patroni/scripts/bootstrap.sh
 
 postgresql:
@@ -63,6 +64,7 @@ postgresql:
       password: ${PATRONI_REWIND_PASSWORD}
   parameters:
     unix_socket_directories: /var/run/postgresql
+    wal_level: logical
     shared_preload_libraries: pg_stat_statements
     pg_stat_statements.track: all
     pg_stat_statements.max: 10000

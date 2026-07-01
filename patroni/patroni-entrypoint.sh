@@ -14,6 +14,7 @@ required_vars=(
   PATRONI_REPLICATION_PASSWORD
   PATRONI_REWIND_USERNAME
   PATRONI_REWIND_PASSWORD
+  PATRONI_DEBEZIUM_USERNAME
   POSTGRES_DB
   POSTGRES_USER
   POSTGRES_PASSWORD
@@ -27,8 +28,8 @@ for var_name in "${required_vars[@]}"; do
 done
 
 mkdir -p "${PATRONI_DATA_DIR}" /etc/patroni /var/run/postgresql
-chown -R postgres:postgres "${PATRONI_DATA_DIR}" /etc/patroni /var/run/postgresql /opt/patroni
 chmod 700 "${PATRONI_DATA_DIR}"
+chown -R postgres:postgres "${PATRONI_DATA_DIR}" /etc/patroni /var/run/postgresql /opt/patroni
 
 envsubst < /etc/patroni/patroni.yml.tmpl > /etc/patroni/patroni.yml
 chown postgres:postgres /etc/patroni/patroni.yml

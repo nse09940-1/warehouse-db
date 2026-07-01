@@ -7,13 +7,29 @@ source "${SCRIPT_DIR}/common.sh"
 
 require_env POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD
 
-PROFILE_DIR="${PROFILE_DIR:-profiling/1}"
-OUT_DIR="${WORKSPACE_DIR}/${PROFILE_DIR}"
-EXPLAIN_DIR="${OUT_DIR}/explain"
-mkdir -p "${EXPLAIN_DIR}"
+profile_dir="${PROFILE_DIR:-profiling/1}"
+output_dir="${WORKSPACE_DIR}/${profile_dir}"
+explain_dir="${output_dir}/explain"
 
-psql_for_db "${POSTGRES_DB}" -v ON_ERROR_STOP=1 <<SQL
-\copy (
+mkdir -p "${output_dir}" "${explain_dir}"
+
+sample_order_id="$(
+  psql_for_db "${POSTGRES_DB}" -tAc \
+    "SELECT customer_order_id FROM customer_orders ORDER BY customer_order_id LIMIT 1;"
+)"
+
+if [[ -z "${sample_order_id}" ]]; then
+  echo "No orders found in customer_orders; EXPLAIN collection skipped." >&2
+  exit 1
+fi
+
+from_ts="2020-01-01T00:00:00Z"
+to_ts="2100-01-01T00:00:00Z"
+
+pg_stat_csv="${output_dir}/pg_stat_statements.csv"
+echo "Exporting pg_stat_statements to ${pg_stat_csv}"
+psql_for_db "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -c "\
+\\copy (
   SELECT
     query,
     mean_exec_time,
@@ -21,17 +37,20 @@ psql_for_db "${POSTGRES_DB}" -v ON_ERROR_STOP=1 <<SQL
     shared_blks_hit,
     shared_blks_read
   FROM pg_stat_statements
-  WHERE dbid = (
-    SELECT oid
-    FROM pg_database
-    WHERE datname = current_database()
-  )
   ORDER BY mean_exec_time DESC
-) TO '${OUT_DIR}/pg_stat_statements.csv' WITH CSV HEADER
-SQL
+  LIMIT 500
+) TO '${pg_stat_csv}' WITH (FORMAT csv, HEADER true)"
 
-psql_for_db "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -o "${EXPLAIN_DIR}/oltp_order_read.txt" <<'SQL'
-EXPLAIN (ANALYZE, BUFFERS)
+run_explain() {
+  local name="${1}"
+  local sql="${2}"
+  local file_path="${explain_dir}/${name}.txt"
+  echo "Collecting EXPLAIN for ${name}"
+  psql_for_db "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -X -qAt \
+    -c "EXPLAIN (ANALYZE, BUFFERS, VERBOSE) ${sql}" > "${file_path}"
+}
+
+run_explain "oltp_read_order" "
 SELECT
   co.customer_order_id,
   co.customer_id,
@@ -64,17 +83,30 @@ LEFT JOIN LATERAL (
   FROM customer_order_audit_notes aon
   WHERE aon.customer_order_id = co.customer_order_id
 ) audit_notes ON true
-WHERE co.customer_order_id = 400001
-ORDER BY coi.customer_order_item_id;
-SQL
+WHERE co.customer_order_id = ${sample_order_id}
+ORDER BY coi.customer_order_item_id"
 
-psql_for_db "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -o "${EXPLAIN_DIR}/oltp_order_insert.txt" <<'SQL'
-EXPLAIN (ANALYZE, BUFFERS)
+run_explain "oltp_insert_order" "
 WITH selected_customer AS (
   SELECT customer_id
   FROM customers
   ORDER BY random()
   LIMIT 1
+),
+selected_products AS (
+  SELECT
+    product_id,
+    (row_number() OVER () + 1)::numeric(14,3) AS ordered_quantity,
+    (20 + floor(random() * 150))::numeric(14,2) AS sale_price
+  FROM products
+  ORDER BY random()
+  LIMIT 3
+),
+item_totals AS (
+  SELECT
+    sum(ordered_quantity * sale_price)::numeric(14,2) AS total_amount,
+    count(*)::integer AS items_count
+  FROM selected_products
 ),
 new_order AS (
   INSERT INTO customer_orders (
@@ -89,60 +121,40 @@ new_order AS (
     items_count,
     last_status_changed_at
   )
-  SELECT customer_id, 'Explain street', now(), 'new'::customer_order_status,
-         now() + interval '1 day', now() + interval '1 day 4 hours',
-         1, 0::numeric(14,2), 0, now()
+  SELECT
+    customer_id,
+    format('Profile street %s', floor(random() * 1000)::int),
+    now(),
+    'new'::customer_order_status,
+    now() + interval '1 day',
+    now() + interval '1 day 4 hours',
+    1,
+    item_totals.total_amount,
+    item_totals.items_count,
+    now()
   FROM selected_customer
-  RETURNING customer_order_id, customer_id, delivery_address, created_at, status
-),
-selected_products AS (
-  SELECT product_id, row_number() OVER () AS rn
-  FROM products
-  ORDER BY random()
-  LIMIT 3
+  CROSS JOIN item_totals
+  RETURNING customer_order_id
 ),
 inserted_items AS (
   INSERT INTO customer_order_items (customer_order_id, product_id, ordered_quantity, sale_price)
-  SELECT new_order.customer_order_id, selected_products.product_id,
-         (selected_products.rn + 1)::numeric(14,3), 20::numeric(14,2)
+  SELECT new_order.customer_order_id, selected_products.product_id, selected_products.ordered_quantity, selected_products.sale_price
   FROM new_order
   JOIN selected_products ON true
   RETURNING customer_order_id
 ),
-item_totals AS (
-  SELECT customer_order_id,
-         sum(ordered_quantity * sale_price)::numeric(14,2) AS total_amount,
-         count(*)::integer AS items_count
-  FROM customer_order_items
-  WHERE customer_order_id = (SELECT customer_order_id FROM new_order)
-  GROUP BY customer_order_id
-),
-updated_order AS (
-  UPDATE customer_orders co
-  SET total_amount = item_totals.total_amount,
-      items_count = item_totals.items_count
-  FROM item_totals
-  WHERE co.customer_order_id = item_totals.customer_order_id
-  RETURNING co.customer_order_id, co.total_amount, co.items_count
-),
 inserted_audit_note AS (
   INSERT INTO customer_order_audit_notes (customer_order_id, note_type, note_text, created_at)
-  SELECT new_order.customer_order_id, 'operator', 'Order created by EXPLAIN workload', now()
+  SELECT customer_order_id, 'operator', 'Order created by collect-profiling script', now()
   FROM new_order
-  RETURNING customer_order_id
 )
-SELECT new_order.customer_order_id, updated_order.total_amount, updated_order.items_count
-FROM new_order
-JOIN updated_order ON updated_order.customer_order_id = new_order.customer_order_id
-LEFT JOIN inserted_audit_note ON inserted_audit_note.customer_order_id = new_order.customer_order_id;
-SQL
+SELECT count(*) FROM inserted_items"
 
-psql_for_db "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -o "${EXPLAIN_DIR}/oltp_status_update.txt" <<'SQL'
-EXPLAIN (ANALYZE, BUFFERS)
+run_explain "oltp_update_status" "
 WITH target_order AS (
   SELECT customer_order_id, status AS old_status
   FROM customer_orders
-  WHERE customer_order_id = 400002
+  WHERE customer_order_id = ${sample_order_id}
   FOR UPDATE
 ),
 updated_order AS (
@@ -155,37 +167,23 @@ updated_order AS (
 ),
 inserted_event AS (
   INSERT INTO order_status_events (customer_order_id, old_status, new_status, event_source, created_at)
-  SELECT target_order.customer_order_id, target_order.old_status, updated_order.new_status, 'explain', now()
+  SELECT target_order.customer_order_id, target_order.old_status, updated_order.new_status, 'collect-profiling', now()
   FROM target_order
   JOIN updated_order ON updated_order.customer_order_id = target_order.customer_order_id
   RETURNING order_status_event_id
 ),
 inserted_audit_note AS (
   INSERT INTO customer_order_audit_notes (customer_order_id, note_type, note_text, created_at)
-  SELECT target_order.customer_order_id, 'status',
-         format('Status changed from %s to %s by EXPLAIN workload', target_order.old_status, updated_order.new_status),
-         now()
+  SELECT target_order.customer_order_id, 'status', 'Status updated by collect-profiling script', now()
   FROM target_order
   JOIN updated_order ON updated_order.customer_order_id = target_order.customer_order_id
   RETURNING audit_note_id
 )
-SELECT target_order.customer_order_id,
-       target_order.old_status,
-       updated_order.new_status,
-       inserted_event.order_status_event_id,
-       inserted_audit_note.audit_note_id
-FROM target_order
-JOIN updated_order ON updated_order.customer_order_id = target_order.customer_order_id
-JOIN inserted_event ON true
-JOIN inserted_audit_note ON true;
-SQL
+SELECT count(*) FROM inserted_event"
 
-psql_for_db "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -o "${EXPLAIN_DIR}/olap_revenue_by_day_degraded.txt" <<'SQL'
-EXPLAIN (ANALYZE, BUFFERS)
+run_explain "olap_revenue_by_day" "
 WITH audit_counts AS (
-  SELECT
-    customer_order_id,
-    count(*) AS audit_note_count
+  SELECT customer_order_id, count(*) AS audit_note_count
   FROM customer_order_audit_notes
   GROUP BY customer_order_id
 ),
@@ -199,8 +197,8 @@ order_category_revenue AS (
   JOIN customer_order_items coi ON coi.customer_order_id = co.customer_order_id
   JOIN products p ON p.product_id = coi.product_id
   JOIN product_categories pc ON pc.category_id = p.category_id
-  WHERE co.created_at >= '2020-01-01T00:00:00Z'::timestamptz
-    AND co.created_at < '2100-01-01T00:00:00Z'::timestamptz
+  WHERE co.created_at >= '${from_ts}'::timestamptz
+    AND co.created_at < '${to_ts}'::timestamptz
   GROUP BY co.customer_order_id, sales_day, pc.category_name
 )
 SELECT
@@ -213,12 +211,12 @@ FROM order_category_revenue ocr
 LEFT JOIN audit_counts ON audit_counts.customer_order_id = ocr.customer_order_id
 GROUP BY ocr.sales_day, ocr.category_name
 ORDER BY sales_day DESC, revenue DESC
-LIMIT 100;
-SQL
+LIMIT 100"
 
-if [[ "$(psql_for_db "${POSTGRES_DB}" -tAc "SELECT to_regclass('public.mv_revenue_by_day_category') IS NOT NULL;")" == "t" ]]; then
-  psql_for_db "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -o "${EXPLAIN_DIR}/olap_revenue_by_day_mv.txt" <<'SQL'
-EXPLAIN (ANALYZE, BUFFERS)
+if psql_for_db "${POSTGRES_DB}" -tAc \
+  "SELECT 1 FROM pg_matviews WHERE matviewname = 'mv_revenue_by_day_category' LIMIT 1;" \
+  | grep -q "1"; then
+  run_explain "olap_revenue_by_day_mv" "
 SELECT
   sales_day,
   category_name,
@@ -226,16 +224,25 @@ SELECT
   revenue,
   audit_note_count
 FROM mv_revenue_by_day_category
-WHERE sales_day >= ('2020-01-01T00:00:00Z'::timestamptz)::date
-  AND sales_day < ('2100-01-01T00:00:00Z'::timestamptz)::date
+WHERE sales_day >= ('${from_ts}'::timestamptz)::date
+  AND sales_day < ('${to_ts}'::timestamptz)::date
 ORDER BY sales_day DESC, revenue DESC
-LIMIT 100;
-SQL
+LIMIT 100"
 fi
 
-psql_for_db "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -o "${EXPLAIN_DIR}/olap_warehouse_turnover.txt" <<'SQL'
-EXPLAIN (ANALYZE, BUFFERS)
-WITH movement_totals AS (
+run_explain "olap_warehouse_turnover" "
+WITH top_warehouses AS (
+  SELECT
+    im.warehouse_id,
+    sum(im.quantity) AS warehouse_total_quantity
+  FROM inventory_movements im
+  WHERE im.moved_at >= '${from_ts}'::timestamptz
+    AND im.moved_at < '${to_ts}'::timestamptz
+  GROUP BY im.warehouse_id
+  ORDER BY warehouse_total_quantity DESC
+  LIMIT 100
+),
+movement_totals AS (
   SELECT
     w.warehouse_id,
     w.warehouse_name,
@@ -245,10 +252,11 @@ WITH movement_totals AS (
     sum(CASE WHEN im.movement_type = 'shipment' THEN im.quantity ELSE 0 END) AS shipped_quantity,
     sum(CASE WHEN im.movement_type IN ('write_off', 'adjustment') THEN im.quantity ELSE 0 END) AS adjusted_quantity
   FROM inventory_movements im
+  JOIN top_warehouses tw ON tw.warehouse_id = im.warehouse_id
   JOIN warehouses w ON w.warehouse_id = im.warehouse_id
   JOIN products p ON p.product_id = im.product_id
-  WHERE im.moved_at >= '2020-01-01T00:00:00Z'::timestamptz
-    AND im.moved_at < '2100-01-01T00:00:00Z'::timestamptz
+  WHERE im.moved_at >= '${from_ts}'::timestamptz
+    AND im.moved_at < '${to_ts}'::timestamptz
   GROUP BY w.warehouse_id, w.warehouse_name, p.product_id, p.product_name
 ),
 ranked AS (
@@ -262,14 +270,21 @@ ranked AS (
   FROM movement_totals
   WHERE (received_quantity + shipped_quantity + adjusted_quantity) >= 1::numeric
 )
-SELECT *
+SELECT
+  warehouse_id,
+  warehouse_name,
+  product_id,
+  product_name,
+  received_quantity,
+  shipped_quantity,
+  adjusted_quantity,
+  total_quantity,
+  product_rank
 FROM ranked
 WHERE product_rank <= 10
-ORDER BY warehouse_name, product_rank, product_name;
-SQL
+ORDER BY warehouse_name, product_rank, product_name"
 
-psql_for_db "${POSTGRES_DB}" -v ON_ERROR_STOP=1 -o "${EXPLAIN_DIR}/log_status_event_insert.txt" <<'SQL'
-EXPLAIN (ANALYZE, BUFFERS)
+run_explain "log_insert_event" "
 WITH selected_order AS (
   SELECT customer_order_id, status AS old_status
   FROM customer_orders
@@ -277,13 +292,22 @@ WITH selected_order AS (
   LIMIT 1
 ),
 inserted_event AS (
-  INSERT INTO order_status_events (customer_order_id, old_status, new_status, event_source, created_at)
-  SELECT selected_order.customer_order_id, selected_order.old_status, 'confirmed'::customer_order_status, 'explain', now()
+  INSERT INTO order_status_events (
+    customer_order_id,
+    old_status,
+    new_status,
+    event_source,
+    created_at
+  )
+  SELECT
+    selected_order.customer_order_id,
+    selected_order.old_status,
+    'shipped'::customer_order_status,
+    'collect-profiling',
+    now()
   FROM selected_order
-  RETURNING order_status_event_id, customer_order_id, created_at
+  RETURNING order_status_event_id
 )
-SELECT order_status_event_id, customer_order_id, created_at
-FROM inserted_event;
-SQL
+SELECT count(*) FROM inserted_event"
 
-echo "Profiling artifacts exported to ${OUT_DIR}"
+echo "Profiling artifacts are collected in ${profile_dir}"

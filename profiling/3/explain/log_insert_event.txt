@@ -1,0 +1,31 @@
+Aggregate  (cost=3240.30..3240.31 rows=1 width=8) (actual time=18.842..18.843 rows=1 loops=1)
+  Output: count(*)
+  Buffers: shared hit=1384
+  CTE selected_order
+    ->  Limit  (cost=3240.25..3240.25 rows=1 width=20) (actual time=18.613..18.614 rows=1 loops=1)
+          Output: customer_orders.customer_order_id, customer_orders.status, (random())
+          Buffers: shared hit=1319
+          ->  Sort  (cost=3240.25..3515.14 rows=109957 width=20) (actual time=18.612..18.612 rows=1 loops=1)
+                Output: customer_orders.customer_order_id, customer_orders.status, (random())
+                Sort Key: (random())
+                Sort Method: top-N heapsort  Memory: 25kB
+                Buffers: shared hit=1319
+                ->  Seq Scan on public.customer_orders  (cost=0.00..2690.46 rows=109957 width=20) (actual time=0.024..11.030 rows=108473 loops=1)
+                      Output: customer_orders.customer_order_id, customer_orders.status, random()
+                      Buffers: shared hit=1316
+  CTE inserted_event
+    ->  Insert on public.order_status_events  (cost=0.00..0.03 rows=1 width=64) (actual time=18.835..18.836 rows=1 loops=1)
+          Output: order_status_events.order_status_event_id
+          Buffers: shared hit=1384
+          ->  CTE Scan on selected_order  (cost=0.00..0.03 rows=1 width=64) (actual time=18.692..18.693 rows=1 loops=1)
+                Output: nextval('order_status_events_order_status_event_id_seq'::regclass), selected_order.customer_order_id, selected_order.old_status, 'shipped'::customer_order_status, 'collect-profiling'::text, now()
+                Buffers: shared hit=1332
+  ->  CTE Scan on inserted_event  (cost=0.00..0.02 rows=1 width=0) (actual time=18.836..18.838 rows=1 loops=1)
+        Output: inserted_event.order_status_event_id
+        Buffers: shared hit=1384
+Query Identifier: 6269365917949559413
+Planning:
+  Buffers: shared hit=133
+Planning Time: 0.331 ms
+Trigger RI_ConstraintTrigger_c_17918 for constraint order_status_events_customer_order_id_fkey: time=0.330 calls=1
+Execution Time: 19.233 ms

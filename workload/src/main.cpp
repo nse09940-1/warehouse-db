@@ -579,7 +579,18 @@ LIMIT 100
         [](const HttpRequestPtr &request,
            std::function<void(const HttpResponsePtr &)> &&callback) {
             static const std::string sql = R"SQL(
-WITH movement_totals AS (
+WITH top_warehouses AS (
+  SELECT
+    im.warehouse_id,
+    sum(im.quantity) AS warehouse_total_quantity
+  FROM inventory_movements im
+  WHERE im.moved_at >= $1::timestamptz
+    AND im.moved_at < $2::timestamptz
+  GROUP BY im.warehouse_id
+  ORDER BY warehouse_total_quantity DESC
+  LIMIT 100
+),
+movement_totals AS (
   SELECT
     w.warehouse_id,
     w.warehouse_name,
@@ -589,6 +600,7 @@ WITH movement_totals AS (
     sum(CASE WHEN im.movement_type = 'shipment' THEN im.quantity ELSE 0 END) AS shipped_quantity,
     sum(CASE WHEN im.movement_type IN ('write_off', 'adjustment') THEN im.quantity ELSE 0 END) AS adjusted_quantity
   FROM inventory_movements im
+  JOIN top_warehouses tw ON tw.warehouse_id = im.warehouse_id
   JOIN warehouses w ON w.warehouse_id = im.warehouse_id
   JOIN products p ON p.product_id = im.product_id
   WHERE im.moved_at >= $1::timestamptz
@@ -724,7 +736,7 @@ FROM inserted_event
         },
         {drogon::Post});
 }
-} // namespace
+}
 
 int main()
 {

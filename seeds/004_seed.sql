@@ -1,8 +1,10 @@
 WITH params AS (
   SELECT GREATEST(1, :'seed_count'::int) AS sc
 ),
-customer_pool AS (
-  SELECT array_agg(customer_id ORDER BY customer_id) AS ids
+customer_bounds AS (
+  SELECT
+    MIN(customer_id) AS min_id,
+    COUNT(*)::bigint AS total_count
   FROM customers
 ),
 series_data AS (
@@ -18,7 +20,7 @@ INSERT INTO customer_orders (
 )
 SELECT
   400000 + series_data.n,
-  customer_pool.ids[((series_data.n - 1) % cardinality(customer_pool.ids)) + 1],
+  customer_bounds.min_id + ((series_data.n - 1) % customer_bounds.total_count),
   format('Street %s, Building %s', ((series_data.n - 1) % 70) + 1, ((series_data.n - 1) % 30) + 1),
   now() - ((series_data.n % 25) || ' days')::interval,
   CASE (series_data.n % 5)
@@ -28,8 +30,8 @@ SELECT
     WHEN 3 THEN 'shipped'::customer_order_status
     ELSE 'delivered'::customer_order_status
   END
-FROM series_data, customer_pool
-WHERE cardinality(customer_pool.ids) > 0
+FROM series_data, customer_bounds
+WHERE customer_bounds.total_count > 0
 ON CONFLICT (customer_order_id) DO UPDATE
 SET customer_id = EXCLUDED.customer_id,
     delivery_address = EXCLUDED.delivery_address,
@@ -39,8 +41,10 @@ SET customer_id = EXCLUDED.customer_id,
 WITH params AS (
   SELECT GREATEST(1, :'seed_count'::int) AS sc
 ),
-product_pool AS (
-  SELECT array_agg(product_id ORDER BY product_id) AS ids
+product_bounds AS (
+  SELECT
+    MIN(product_id) AS min_id,
+    COUNT(*)::bigint AS total_count
   FROM products
 ),
 series_data AS (
@@ -59,11 +63,11 @@ INSERT INTO customer_order_items (
 SELECT
   410000 + ((series_data.order_n - 1) * 4) + series_data.line_n,
   400000 + series_data.order_n,
-  product_pool.ids[((series_data.order_n + series_data.line_n - 2) % cardinality(product_pool.ids)) + 1],
+  product_bounds.min_id + ((series_data.order_n + series_data.line_n - 2) % product_bounds.total_count),
   (series_data.line_n + 1)::numeric(14,3),
   (20 + ((series_data.order_n + series_data.line_n) % 120))::numeric(14,2)
-FROM series_data, product_pool
-WHERE cardinality(product_pool.ids) > 0
+FROM series_data, product_bounds
+WHERE product_bounds.total_count > 0
 ON CONFLICT (customer_order_item_id) DO UPDATE
 SET customer_order_id = EXCLUDED.customer_order_id,
     product_id = EXCLUDED.product_id,
@@ -80,4 +84,3 @@ SELECT setval(
   GREATEST((SELECT COALESCE(MAX(customer_order_item_id), 1) FROM customer_order_items), 1),
   true
 );
-

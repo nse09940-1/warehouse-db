@@ -1,0 +1,61 @@
+Aggregate  (cost=16.79..16.80 rows=1 width=8) (actual time=0.551..0.553 rows=1 loops=1)
+  Output: count(*)
+  Buffers: shared hit=89 dirtied=2
+  CTE target_order
+    ->  LockRows  (cost=0.29..8.32 rows=1 width=18) (actual time=0.058..0.060 rows=1 loops=1)
+          Output: customer_orders.customer_order_id, customer_orders.status, customer_orders.ctid
+          Buffers: shared hit=7
+          ->  Index Scan using customer_orders_pkey on public.customer_orders  (cost=0.29..8.31 rows=1 width=18) (actual time=0.043..0.044 rows=1 loops=1)
+                Output: customer_orders.customer_order_id, customer_orders.status, customer_orders.ctid
+                Index Cond: (customer_orders.customer_order_id = 400001)
+                Buffers: shared hit=6
+  CTE updated_order
+    ->  Update on public.customer_orders co  (cost=0.29..8.33 rows=1 width=50) (actual time=0.072..0.074 rows=1 loops=1)
+          Output: co.customer_order_id, co.status
+          Buffers: shared hit=17
+          ->  Nested Loop  (cost=0.29..8.33 rows=1 width=50) (actual time=0.012..0.014 rows=1 loops=1)
+                Output: 'confirmed'::customer_order_status, now(), co.ctid, target_order.*
+                Inner Unique: true
+                Buffers: shared hit=3
+                ->  CTE Scan on target_order  (cost=0.00..0.02 rows=1 width=40) (actual time=0.007..0.009 rows=1 loops=1)
+                      Output: target_order.*, target_order.customer_order_id
+                ->  Index Scan using customer_orders_pkey on public.customer_orders co  (cost=0.29..8.31 rows=1 width=14) (actual time=0.004..0.004 rows=1 loops=1)
+                      Output: co.ctid, co.customer_order_id
+                      Index Cond: (co.customer_order_id = target_order.customer_order_id)
+                      Buffers: shared hit=3
+  CTE inserted_event
+    ->  Insert on public.order_status_events  (cost=0.00..0.06 rows=1 width=64) (actual time=0.543..0.547 rows=1 loops=1)
+          Output: order_status_events.order_status_event_id
+          Buffers: shared hit=89 dirtied=2
+          ->  Nested Loop  (cost=0.00..0.06 rows=1 width=64) (actual time=0.170..0.173 rows=1 loops=1)
+                Output: nextval('order_status_events_order_status_event_id_seq'::regclass), target_order_1.customer_order_id, target_order_1.old_status, updated_order.new_status, 'collect-profiling'::text, now()
+                Join Filter: (target_order_1.customer_order_id = updated_order.customer_order_id)
+                Buffers: shared hit=37 dirtied=1
+                ->  CTE Scan on target_order target_order_1  (cost=0.00..0.02 rows=1 width=12) (actual time=0.065..0.065 rows=1 loops=1)
+                      Output: target_order_1.customer_order_id, target_order_1.old_status
+                      Buffers: shared hit=7
+                ->  CTE Scan on updated_order  (cost=0.00..0.02 rows=1 width=12) (actual time=0.072..0.074 rows=1 loops=1)
+                      Output: updated_order.customer_order_id, updated_order.new_status
+                      Buffers: shared hit=17
+  CTE inserted_audit_note
+    ->  Insert on public.customer_order_audit_notes  (cost=0.00..0.06 rows=1 width=88) (actual time=0.153..0.154 rows=1 loops=1)
+          Output: customer_order_audit_notes.audit_note_id
+          Buffers: shared hit=82 dirtied=1
+          ->  Nested Loop  (cost=0.00..0.06 rows=1 width=88) (actual time=0.024..0.024 rows=1 loops=1)
+                Output: nextval('customer_order_audit_notes_audit_note_id_seq'::regclass), target_order_2.customer_order_id, 'status'::text, 'Status updated by collect-profiling script'::text, now()
+                Join Filter: (target_order_2.customer_order_id = updated_order_1.customer_order_id)
+                Buffers: shared hit=12
+                ->  CTE Scan on target_order target_order_2  (cost=0.00..0.02 rows=1 width=8) (actual time=0.000..0.001 rows=1 loops=1)
+                      Output: target_order_2.customer_order_id, target_order_2.old_status
+                ->  CTE Scan on updated_order updated_order_1  (cost=0.00..0.02 rows=1 width=8) (actual time=0.000..0.000 rows=1 loops=1)
+                      Output: updated_order_1.customer_order_id, updated_order_1.new_status
+  ->  CTE Scan on inserted_event  (cost=0.00..0.02 rows=1 width=0) (actual time=0.545..0.549 rows=1 loops=1)
+        Output: inserted_event.order_status_event_id
+        Buffers: shared hit=89 dirtied=2
+Query Identifier: -8967567160667724560
+Planning:
+  Buffers: shared hit=232
+Planning Time: 0.573 ms
+Trigger RI_ConstraintTrigger_c_17918 for constraint order_status_events_customer_order_id_fkey on order_status_events: time=0.130 calls=1
+Trigger RI_ConstraintTrigger_c_17941 for constraint customer_order_audit_notes_customer_order_id_fkey on customer_order_audit_notes: time=0.038 calls=1
+Execution Time: 1.816 ms

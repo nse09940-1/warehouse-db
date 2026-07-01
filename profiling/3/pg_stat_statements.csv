@@ -1,0 +1,3015 @@
+query,mean_exec_time,calls,shared_blks_hit,shared_blks_read
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+),
+product_bounds AS (
+  SELECT
+    MIN(product_id) AS min_id,
+    COUNT(*)::bigint AS total_count
+  FROM products
+),
+series_data AS (
+  SELECT order_n, line_n
+  FROM params,
+  generate_series($3, params.sc * $4) AS order_n,
+  generate_series($5, $6) AS line_n
+)
+INSERT INTO customer_order_items (
+  customer_order_item_id,
+  customer_order_id,
+  product_id,
+  ordered_quantity,
+  sale_price
+)
+SELECT
+  $7 + ((series_data.order_n - $8) * $9) + series_data.line_n,
+  $10 + series_data.order_n,
+  product_bounds.min_id + ((series_data.order_n + series_data.line_n - $11) % product_bounds.total_count),
+  (series_data.line_n + $12)::numeric(14,3),
+  ($13 + ((series_data.order_n + series_data.line_n) % $14))::numeric(14,2)
+FROM series_data, product_bounds
+WHERE product_bounds.total_count > $15
+ON CONFLICT (customer_order_item_id) DO UPDATE
+SET customer_order_id = EXCLUDED.customer_order_id,
+    product_id = EXCLUDED.product_id,
+    ordered_quantity = EXCLUDED.ordered_quantity,
+    sale_price = EXCLUDED.sale_price",5229.200502000001,1,8680581,0
+"WITH movement_source AS (
+  SELECT
+    $1 + row_number() OVER (ORDER BY si.shipment_item_id) AS movement_id,
+    coi.product_id,
+    s.warehouse_id,
+    si.shipped_quantity AS quantity,
+    s.shipped_at AS moved_at,
+    s.shipped_by_employee_id AS employee_id
+  FROM shipment_items si
+  JOIN shipments s ON s.shipment_id = si.shipment_id
+  JOIN customer_order_items coi ON coi.customer_order_item_id = si.customer_order_item_id
+)
+INSERT INTO inventory_movements (
+  inventory_movement_id,
+  product_id,
+  warehouse_id,
+  movement_type,
+  quantity,
+  moved_at,
+  employee_id
+)
+SELECT
+  movement_source.movement_id,
+  movement_source.product_id,
+  movement_source.warehouse_id,
+  $2::inventory_movement_type,
+  movement_source.quantity,
+  movement_source.moved_at,
+  movement_source.employee_id
+FROM movement_source
+ON CONFLICT (inventory_movement_id) DO UPDATE
+SET product_id = EXCLUDED.product_id,
+    warehouse_id = EXCLUDED.warehouse_id,
+    movement_type = EXCLUDED.movement_type,
+    quantity = EXCLUDED.quantity,
+    moved_at = EXCLUDED.moved_at,
+    employee_id = EXCLUDED.employee_id",3372.92472,1,5209388,3
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+),
+series_data AS (
+  SELECT order_n, line_n
+  FROM params,
+  generate_series($3, params.sc * $4) AS order_n,
+  generate_series($5, $6) AS line_n
+)
+INSERT INTO shipment_items (
+  shipment_item_id,
+  shipment_id,
+  customer_order_item_id,
+  shipped_quantity
+)
+SELECT
+  $7 + ((series_data.order_n - $8) * $9) + series_data.line_n,
+  $10 + series_data.order_n,
+  $11 + ((series_data.order_n - $12) * $13) + series_data.line_n,
+  (series_data.line_n + $14)::numeric(14,3)
+FROM series_data
+ON CONFLICT (shipment_item_id) DO UPDATE
+SET shipment_id = EXCLUDED.shipment_id,
+    customer_order_item_id = EXCLUDED.customer_order_item_id,
+    shipped_quantity = EXCLUDED.shipped_quantity",2507.705051,1,4052708,2
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+),
+category_pool AS (
+  SELECT array_agg(category_id ORDER BY category_id) AS ids
+  FROM product_categories
+),
+brand_pool AS (
+  SELECT array_agg(brand_id ORDER BY brand_id) AS ids
+  FROM brands
+),
+series_data AS (
+  SELECT gs AS n
+  FROM params, generate_series($3, params.sc * $4) AS gs
+)
+INSERT INTO products (category_id, brand_id, product_name, unit_of_measure)
+SELECT
+  category_pool.ids[((series_data.n - $5) % cardinality(category_pool.ids)) + $6],
+  brand_pool.ids[((series_data.n - $7) % cardinality(brand_pool.ids)) + $8],
+  format($9, series_data.n),
+  CASE (series_data.n % $10)
+    WHEN $11 THEN $12
+    WHEN $13 THEN $14
+    ELSE $15
+  END
+FROM series_data, category_pool, brand_pool
+WHERE cardinality(category_pool.ids) > $16
+  AND cardinality(brand_pool.ids) > $17
+ON CONFLICT (brand_id, product_name) DO UPDATE
+SET category_id = EXCLUDED.category_id,
+    unit_of_measure = EXCLUDED.unit_of_measure",2400.780724,1,3833216,0
+"WITH movement_totals AS (
+  SELECT
+    w.warehouse_id,
+    w.warehouse_name,
+    p.product_id,
+    p.product_name,
+    sum(CASE WHEN im.movement_type = $4 THEN im.quantity ELSE $5 END) AS received_quantity,
+    sum(CASE WHEN im.movement_type = $6 THEN im.quantity ELSE $7 END) AS shipped_quantity,
+    sum(CASE WHEN im.movement_type IN ($8, $9) THEN im.quantity ELSE $10 END) AS adjusted_quantity
+  FROM inventory_movements im
+  JOIN warehouses w ON w.warehouse_id = im.warehouse_id
+  JOIN products p ON p.product_id = im.product_id
+  WHERE im.moved_at >= $1::timestamptz
+    AND im.moved_at < $2::timestamptz
+  GROUP BY w.warehouse_id, w.warehouse_name, p.product_id, p.product_name
+),
+ranked AS (
+  SELECT
+    *,
+    (received_quantity + shipped_quantity + adjusted_quantity) AS total_quantity,
+    dense_rank() OVER (
+      PARTITION BY warehouse_id
+      ORDER BY (received_quantity + shipped_quantity + adjusted_quantity) DESC
+    ) AS product_rank
+  FROM movement_totals
+  WHERE (received_quantity + shipped_quantity + adjusted_quantity) >= $3::numeric
+)
+SELECT
+  warehouse_id,
+  warehouse_name,
+  product_id,
+  product_name,
+  received_quantity,
+  shipped_quantity,
+  adjusted_quantity,
+  total_quantity,
+  product_rank
+FROM ranked
+WHERE product_rank <= $11
+ORDER BY warehouse_name, product_rank, product_name",1665.8048406557377,61,299268,0
+"WITH movement_source AS (
+  SELECT
+    $1 + row_number() OVER (ORDER BY gri.goods_receipt_item_id) AS movement_id,
+    soi.product_id,
+    gr.warehouse_id,
+    gri.received_quantity AS quantity,
+    gr.received_at AS moved_at,
+    gr.accepted_by_employee_id AS employee_id
+  FROM goods_receipt_items gri
+  JOIN goods_receipts gr ON gr.goods_receipt_id = gri.goods_receipt_id
+  JOIN supplier_order_items soi ON soi.supplier_order_item_id = gri.supplier_order_item_id
+)
+INSERT INTO inventory_movements (
+  inventory_movement_id,
+  product_id,
+  warehouse_id,
+  movement_type,
+  quantity,
+  moved_at,
+  employee_id
+)
+SELECT
+  movement_source.movement_id,
+  movement_source.product_id,
+  movement_source.warehouse_id,
+  $2::inventory_movement_type,
+  movement_source.quantity,
+  movement_source.moved_at,
+  movement_source.employee_id
+FROM movement_source
+ON CONFLICT (inventory_movement_id) DO UPDATE
+SET product_id = EXCLUDED.product_id,
+    warehouse_id = EXCLUDED.warehouse_id,
+    movement_type = EXCLUDED.movement_type,
+    quantity = EXCLUDED.quantity,
+    moved_at = EXCLUDED.moved_at,
+    employee_id = EXCLUDED.employee_id",1618.3383760000002,1,2779308,0
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+),
+warehouse_pool AS (
+  SELECT array_agg(warehouse_id ORDER BY warehouse_id) AS ids
+  FROM warehouses
+),
+employee_pool AS (
+  SELECT array_agg(employee_id ORDER BY employee_id) AS ids
+  FROM employees
+),
+series_data AS (
+  SELECT gs AS n
+  FROM params, generate_series($3, params.sc * $4) AS gs
+)
+INSERT INTO shipments (
+  shipment_id,
+  customer_order_id,
+  warehouse_id,
+  shipped_by_employee_id,
+  shipped_at,
+  status
+)
+SELECT
+  $5 + series_data.n,
+  $6 + series_data.n,
+  warehouse_pool.ids[((series_data.n - $7) % cardinality(warehouse_pool.ids)) + $8],
+  employee_pool.ids[((series_data.n - $9) % cardinality(employee_pool.ids)) + $10],
+  now() - ((series_data.n % $11) || $12)::interval,
+  CASE (series_data.n % $13)
+    WHEN $14 THEN $15::shipment_status
+    WHEN $16 THEN $17::shipment_status
+    ELSE $18::shipment_status
+  END
+FROM series_data, warehouse_pool, employee_pool
+WHERE cardinality(warehouse_pool.ids) > $19
+  AND cardinality(employee_pool.ids) > $20
+ON CONFLICT (shipment_id) DO UPDATE
+SET customer_order_id = EXCLUDED.customer_order_id,
+    warehouse_id = EXCLUDED.warehouse_id,
+    shipped_by_employee_id = EXCLUDED.shipped_by_employee_id,
+    shipped_at = EXCLUDED.shipped_at,
+    status = EXCLUDED.status",1413.051307,1,2101788,1
+REFRESH MATERIALIZED VIEW CONCURRENTLY mv_revenue_by_day_category,1331.2548904999999,2,51321,4
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+)
+INSERT INTO customers (full_name, email, phone, created_at)
+SELECT
+  format($3, gs),
+  format($4, gs),
+  format($5, gs),
+  now() - ((gs % $6) || $7)::interval
+FROM params, generate_series($8, params.sc * $9) AS gs
+ON CONFLICT (email) DO UPDATE
+SET full_name = EXCLUDED.full_name,
+    phone = EXCLUDED.phone,
+    created_at = EXCLUDED.created_at",1088.862776,1,1067246,2
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+),
+series_data AS (
+  SELECT order_n, line_n
+  FROM params,
+  generate_series($3, params.sc * $4) AS order_n,
+  generate_series($5, $6) AS line_n
+)
+INSERT INTO goods_receipt_items (
+  goods_receipt_item_id,
+  goods_receipt_id,
+  supplier_order_item_id,
+  received_quantity,
+  unit_cost,
+  expiration_date
+)
+SELECT
+  $7 + ((series_data.order_n - $8) * $9) + series_data.line_n,
+  $10 + series_data.order_n,
+  $11 + ((series_data.order_n - $12) * $13) + series_data.line_n,
+  (series_data.line_n + (series_data.order_n % $14) + $15)::numeric(14,3),
+  ($16 + (series_data.order_n % $17))::numeric(14,2),
+  CURRENT_DATE + (series_data.order_n % $18)
+FROM series_data
+ON CONFLICT (goods_receipt_item_id) DO UPDATE
+SET goods_receipt_id = EXCLUDED.goods_receipt_id,
+    supplier_order_item_id = EXCLUDED.supplier_order_item_id,
+    received_quantity = EXCLUDED.received_quantity,
+    unit_cost = EXCLUDED.unit_cost,
+    expiration_date = EXCLUDED.expiration_date",893.820569,1,1448261,2
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+),
+customer_bounds AS (
+  SELECT
+    MIN(customer_id) AS min_id,
+    COUNT(*)::bigint AS total_count
+  FROM customers
+),
+series_data AS (
+  SELECT gs AS n
+  FROM params, generate_series($3, params.sc * $4) AS gs
+)
+INSERT INTO customer_orders (
+  customer_order_id,
+  customer_id,
+  delivery_address,
+  created_at,
+  status
+)
+SELECT
+  $5 + series_data.n,
+  customer_bounds.min_id + ((series_data.n - $6) % customer_bounds.total_count),
+  format($7, ((series_data.n - $8) % $9) + $10, ((series_data.n - $11) % $12) + $13),
+  now() - ((series_data.n % $14) || $15)::interval,
+  CASE (series_data.n % $16)
+    WHEN $17 THEN $18::customer_order_status
+    WHEN $19 THEN $20::customer_order_status
+    WHEN $21 THEN $22::customer_order_status
+    WHEN $23 THEN $24::customer_order_status
+    ELSE $25::customer_order_status
+  END
+FROM series_data, customer_bounds
+WHERE customer_bounds.total_count > $26
+ON CONFLICT (customer_order_id) DO UPDATE
+SET customer_id = EXCLUDED.customer_id,
+    delivery_address = EXCLUDED.delivery_address,
+    created_at = EXCLUDED.created_at,
+    status = EXCLUDED.status",862.086997,1,1500906,0
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+),
+product_bounds AS (
+  SELECT
+    MIN(product_id) AS min_id,
+    COUNT(*)::bigint AS total_count
+  FROM products
+),
+series_data AS (
+  SELECT order_n, line_n
+  FROM params,
+  generate_series($3, params.sc * $4) AS order_n,
+  generate_series($5, $6) AS line_n
+)
+INSERT INTO supplier_order_items (
+  supplier_order_item_id,
+  supplier_order_id,
+  product_id,
+  ordered_quantity,
+  unit_price
+)
+SELECT
+  $7 + ((series_data.order_n - $8) * $9) + series_data.line_n,
+  $10 + series_data.order_n,
+  product_bounds.min_id + ((series_data.order_n + series_data.line_n - $11) % product_bounds.total_count),
+  (series_data.line_n + (series_data.order_n % $12) + $13)::numeric(14,3),
+  ($14 + (series_data.order_n % $15))::numeric(14,2)
+FROM series_data, product_bounds
+WHERE product_bounds.total_count > $16
+ON CONFLICT (supplier_order_item_id) DO UPDATE
+SET supplier_order_id = EXCLUDED.supplier_order_id,
+    product_id = EXCLUDED.product_id,
+    ordered_quantity = EXCLUDED.ordered_quantity,
+    unit_price = EXCLUDED.unit_price",858.220808,1,1522636,2
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+),
+warehouse_pool AS (
+  SELECT array_agg(warehouse_id ORDER BY warehouse_id) AS ids
+  FROM warehouses
+),
+employee_pool AS (
+  SELECT array_agg(employee_id ORDER BY employee_id) AS ids
+  FROM employees
+),
+series_data AS (
+  SELECT gs AS n
+  FROM params, generate_series($3, params.sc * $4) AS gs
+)
+INSERT INTO goods_receipts (
+  goods_receipt_id,
+  supplier_order_id,
+  warehouse_id,
+  accepted_by_employee_id,
+  received_at
+)
+SELECT
+  $5 + series_data.n,
+  $6 + series_data.n,
+  warehouse_pool.ids[((series_data.n - $7) % cardinality(warehouse_pool.ids)) + $8],
+  employee_pool.ids[((series_data.n - $9) % cardinality(employee_pool.ids)) + $10],
+  now() - ((series_data.n % $11) || $12)::interval
+FROM series_data, warehouse_pool, employee_pool
+WHERE cardinality(warehouse_pool.ids) > $13
+  AND cardinality(employee_pool.ids) > $14
+ON CONFLICT (goods_receipt_id) DO UPDATE
+SET supplier_order_id = EXCLUDED.supplier_order_id,
+    warehouse_id = EXCLUDED.warehouse_id,
+    accepted_by_employee_id = EXCLUDED.accepted_by_employee_id,
+    received_at = EXCLUDED.received_at",507.852109,1,840297,1
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+),
+supplier_pool AS (
+  SELECT array_agg(supplier_id ORDER BY supplier_id) AS ids
+  FROM suppliers
+),
+employee_pool AS (
+  SELECT array_agg(employee_id ORDER BY employee_id) AS ids
+  FROM employees
+),
+series_data AS (
+  SELECT gs AS n
+  FROM params, generate_series($3, params.sc * $4) AS gs
+)
+INSERT INTO supplier_orders (
+  supplier_order_id,
+  supplier_id,
+  created_by_employee_id,
+  order_date,
+  status
+)
+SELECT
+  $5 + series_data.n,
+  supplier_pool.ids[((series_data.n - $6) % cardinality(supplier_pool.ids)) + $7],
+  employee_pool.ids[((series_data.n - $8) % cardinality(employee_pool.ids)) + $9],
+  CURRENT_DATE - (series_data.n % $10),
+  CASE (series_data.n % $11)
+    WHEN $12 THEN $13::supplier_order_status
+    WHEN $14 THEN $15::supplier_order_status
+    WHEN $16 THEN $17::supplier_order_status
+    ELSE $18::supplier_order_status
+  END
+FROM series_data, supplier_pool, employee_pool
+WHERE cardinality(supplier_pool.ids) > $19
+  AND cardinality(employee_pool.ids) > $20
+ON CONFLICT (supplier_order_id) DO UPDATE
+SET supplier_id = EXCLUDED.supplier_id,
+    created_by_employee_id = EXCLUDED.created_by_employee_id,
+    order_date = EXCLUDED.order_date,
+    status = EXCLUDED.status",419.91996,1,640701,1
+"DROP DATABASE IF EXISTS ""warehouse_test"" WITH (FORCE)",403.15502499999997,2,67,3
+"WITH selected_customer AS (
+  SELECT customer_id
+  FROM customers
+  ORDER BY random()
+  LIMIT $1
+),
+selected_products AS (
+  SELECT
+    product_id,
+    row_number() OVER () AS rn,
+    (row_number() OVER () + $2)::numeric(14,3) AS ordered_quantity,
+    ($3 + floor(random() * $4))::numeric(14,2) AS sale_price
+  FROM products
+  ORDER BY random()
+  LIMIT $5
+),
+item_totals AS (
+  SELECT
+    sum(ordered_quantity * sale_price)::numeric(14,2) AS total_amount,
+    count(*)::integer AS items_count
+  FROM selected_products
+),
+new_order AS (
+  INSERT INTO customer_orders (
+    customer_id,
+    delivery_address,
+    created_at,
+    status,
+    delivery_window_start,
+    delivery_window_end,
+    delivery_priority,
+    total_amount,
+    items_count,
+    last_status_changed_at
+  )
+  SELECT
+    customer_id,
+    format($6, floor(random() * $7)::int, floor(random() * $8)::int),
+    now(),
+    $9::customer_order_status,
+    now() + interval $10,
+    now() + interval $11,
+    $12,
+    item_totals.total_amount,
+    item_totals.items_count,
+    now()
+  FROM selected_customer
+  CROSS JOIN item_totals
+  RETURNING customer_order_id, customer_id, delivery_address, created_at, status, total_amount, items_count
+),
+inserted_items AS (
+  INSERT INTO customer_order_items (
+    customer_order_id,
+    product_id,
+    ordered_quantity,
+    sale_price
+  )
+  SELECT
+    new_order.customer_order_id,
+    selected_products.product_id,
+    selected_products.ordered_quantity,
+    selected_products.sale_price
+  FROM new_order
+  JOIN selected_products ON $13
+  RETURNING customer_order_id, ordered_quantity, sale_price
+),
+inserted_audit_note AS (
+  INSERT INTO customer_order_audit_notes (
+    customer_order_id,
+    note_type,
+    note_text,
+    created_at
+  )
+  SELECT
+    new_order.customer_order_id,
+    $14,
+    $15,
+    now()
+  FROM new_order
+  RETURNING customer_order_id
+)
+SELECT
+  new_order.customer_order_id,
+  new_order.customer_id,
+  new_order.delivery_address,
+  new_order.created_at,
+  new_order.status::text AS status,
+  new_order.total_amount,
+  new_order.items_count,
+  count(inserted_items.customer_order_id) AS item_count
+FROM new_order
+LEFT JOIN inserted_items ON inserted_items.customer_order_id = new_order.customer_order_id
+LEFT JOIN inserted_audit_note ON inserted_audit_note.customer_order_id = new_order.customer_order_id
+GROUP BY
+  new_order.customer_order_id,
+  new_order.customer_id,
+  new_order.delivery_address,
+  new_order.created_at,
+  new_order.status,
+  new_order.total_amount,
+  new_order.items_count",398.66746382294644,8472,27032836,0
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+)
+INSERT INTO suppliers (supplier_name, email, phone)
+SELECT
+  format($3, gs),
+  format($4, gs),
+  format($5, gs)
+FROM params, generate_series($6, params.sc * $7) AS gs
+ON CONFLICT (supplier_name) DO UPDATE
+SET email = EXCLUDED.email,
+    phone = EXCLUDED.phone",337.47085500000003,1,360557,2
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+)
+INSERT INTO brands (brand_name)
+SELECT format($3, gs)
+FROM params, generate_series($4, GREATEST($5, params.sc * $6)) AS gs
+ON CONFLICT (brand_name) DO NOTHING",325.432326,1,360153,2
+"CREATE DATABASE ""warehouse_test""",222.5958945,2,1161,861
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+)
+INSERT INTO employees (full_name, email, position_name, hired_at)
+SELECT
+  format($3, gs),
+  format($4, gs),
+  CASE (gs % $5)
+    WHEN $6 THEN $7
+    WHEN $8 THEN $9
+    WHEN $10 THEN $11
+    ELSE $12
+  END,
+  CURRENT_DATE - (gs % $13)
+FROM params, generate_series($14, GREATEST($15, params.sc)) AS gs
+ON CONFLICT (email) DO UPDATE
+SET full_name = EXCLUDED.full_name,
+    position_name = EXCLUDED.position_name,
+    hired_at = EXCLUDED.hired_at",167.44070399999998,1,183879,2
+"CREATE INDEX IF NOT EXISTS idx_inventory_movements_moved_warehouse_product
+  ON inventory_movements (moved_at, warehouse_id, product_id, movement_type)",120.913258,1,3256,0
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+)
+INSERT INTO warehouses (warehouse_name, city)
+SELECT format($3, gs), format($4, ((gs - $5) % $6) + $7)
+FROM params, generate_series($8, GREATEST($9, params.sc / $10)) AS gs
+ON CONFLICT (warehouse_name) DO UPDATE SET city = EXCLUDED.city",76.78130399999999,1,89321,2
+"WITH selected_order AS (
+  SELECT customer_order_id, status AS old_status
+  FROM customer_orders
+  ORDER BY random()
+  LIMIT $2
+),
+inserted_event AS (
+  INSERT INTO order_status_events (
+    customer_order_id,
+    old_status,
+    new_status,
+    event_source,
+    created_at
+  )
+  SELECT
+    selected_order.customer_order_id,
+    selected_order.old_status,
+    $1::customer_order_status,
+    $3,
+    now()
+  FROM selected_order
+  RETURNING order_status_event_id, customer_order_id, created_at
+)
+SELECT
+  order_status_event_id,
+  customer_order_id,
+  created_at
+FROM inserted_event",25.228816390429134,13959,17562636,0
+CREATE DATABASE warehouse OWNER warehouse_user,24.787931,1,74,921
+"SELECT pg_catalog.pg_create_physical_replication_slot($1, $3) WHERE NOT EXISTS (SELECT $4 FROM pg_catalog.pg_replication_slots WHERE slot_type = $5 AND slot_name = $2)",20.640251,1,0,0
+"CREATE TABLE IF NOT EXISTS products (
+  product_id BIGSERIAL PRIMARY KEY,
+  category_id BIGINT NOT NULL REFERENCES product_categories(category_id),
+  brand_id BIGINT NOT NULL REFERENCES brands(brand_id),
+  product_name TEXT NOT NULL,
+  unit_of_measure TEXT NOT NULL,
+  CONSTRAINT uq_products_brand_name UNIQUE (brand_id, product_name)
+)",19.56531,1,1149,0
+"CREATE TABLE IF NOT EXISTS products (
+  product_id BIGSERIAL PRIMARY KEY,
+  category_id BIGINT NOT NULL REFERENCES product_categories(category_id),
+  brand_id BIGINT NOT NULL REFERENCES brands(brand_id),
+  product_name TEXT NOT NULL,
+  unit_of_measure TEXT NOT NULL,
+  CONSTRAINT uq_products_brand_name UNIQUE (brand_id, product_name)
+)",17.01723833333333,3,3526,0
+"CREATE TABLE IF NOT EXISTS customers (
+  customer_id BIGSERIAL PRIMARY KEY,
+  full_name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  phone TEXT,
+  created_at TIMESTAMPTZ NOT NULL
+)",16.541148,3,2354,0
+"CREATE TABLE IF NOT EXISTS products (
+  product_id BIGSERIAL PRIMARY KEY,
+  category_id BIGINT NOT NULL REFERENCES product_categories(category_id),
+  brand_id BIGINT NOT NULL REFERENCES brands(brand_id),
+  product_name TEXT NOT NULL,
+  unit_of_measure TEXT NOT NULL,
+  CONSTRAINT uq_products_brand_name UNIQUE (brand_id, product_name)
+)",14.421315333333332,3,3587,0
+"CREATE TABLE IF NOT EXISTS customers (
+  customer_id BIGSERIAL PRIMARY KEY,
+  full_name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  phone TEXT,
+  created_at TIMESTAMPTZ NOT NULL
+)",14.226398999999999,3,2356,0
+"SELECT
+                tc.constraint_name,
+                tc.table_name,
+                kcu.column_name,
+                ccu.table_name  AS foreign_table_name,
+                ccu.column_name AS foreign_column_name,
+                rc.update_rule,
+                rc.delete_rule
+            FROM information_schema.table_constraints        AS tc
+            JOIN information_schema.key_column_usage         AS kcu ON tc.constraint_name = kcu.constraint_name
+            JOIN information_schema.referential_constraints  AS rc  ON tc.constraint_name = rc.constraint_name
+            JOIN information_schema.constraint_column_usage  AS ccu ON ccu.constraint_name = tc.constraint_name
+            WHERE tc.constraint_type = $1
+              AND tc.table_schema = $2",14.107336838235298,68,1039551,0
+"CREATE TABLE IF NOT EXISTS customers (
+  customer_id BIGSERIAL PRIMARY KEY,
+  full_name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  phone TEXT,
+  created_at TIMESTAMPTZ NOT NULL
+)",13.968976,1,780,0
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements,13.464421666666665,3,7951,0
+"SELECT
+                tc.constraint_name,
+                tc.table_name,
+                kcu.column_name,
+                ccu.table_name  AS foreign_table_name,
+                ccu.column_name AS foreign_column_name,
+                rc.update_rule,
+                rc.delete_rule
+            FROM information_schema.table_constraints        AS tc
+            JOIN information_schema.key_column_usage         AS kcu ON tc.constraint_name = kcu.constraint_name
+            JOIN information_schema.referential_constraints  AS rc  ON tc.constraint_name = rc.constraint_name
+            JOIN information_schema.constraint_column_usage  AS ccu ON ccu.constraint_name = tc.constraint_name
+            WHERE tc.constraint_type = $1
+              AND tc.table_schema = $2",13.38234278082192,73,1238254,0
+"CREATE TABLE IF NOT EXISTS customer_order_audit_notes (
+  audit_note_id BIGSERIAL PRIMARY KEY,
+  customer_order_id BIGINT NOT NULL REFERENCES customer_orders(customer_order_id),
+  note_type TEXT NOT NULL,
+  note_text TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)",12.721263333333335,3,2753,0
+"CREATE TABLE IF NOT EXISTS shipments (
+  shipment_id BIGSERIAL PRIMARY KEY,
+  customer_order_id BIGINT NOT NULL REFERENCES customer_orders(customer_order_id),
+  warehouse_id BIGINT NOT NULL REFERENCES warehouses(warehouse_id),
+  shipped_by_employee_id BIGINT NOT NULL REFERENCES employees(employee_id),
+  shipped_at TIMESTAMPTZ NOT NULL,
+  status shipment_status NOT NULL
+)",11.765706,3,2924,0
+"CREATE TABLE IF NOT EXISTS warehouses (
+  warehouse_id BIGSERIAL PRIMARY KEY,
+  warehouse_name TEXT NOT NULL UNIQUE,
+  city TEXT NOT NULL
+)",11.676511333333334,3,1814,0
+"CREATE TABLE public.databasechangeloglock (ID INTEGER NOT NULL, LOCKED BOOLEAN NOT NULL, LOCKGRANTED TIMESTAMP WITHOUT TIME ZONE, LOCKEDBY VARCHAR(255), CONSTRAINT databasechangeloglock_pkey PRIMARY KEY (ID))",11.501032,1,277,0
+"CREATE TABLE IF NOT EXISTS product_categories (
+  category_id BIGSERIAL PRIMARY KEY,
+  category_name TEXT NOT NULL UNIQUE
+)",11.064375333333333,3,1794,0
+"CREATE MATERIALIZED VIEW mv_revenue_by_day_category AS
+WITH audit_counts AS (
+  SELECT
+    customer_order_id,
+    count(*) AS audit_note_count
+  FROM customer_order_audit_notes
+  GROUP BY customer_order_id
+),
+order_category_revenue AS (
+  SELECT
+    co.customer_order_id,
+    date_trunc($1, co.created_at)::date AS sales_day,
+    pc.category_name,
+    sum(coi.ordered_quantity * coi.sale_price) AS revenue
+  FROM customer_orders co
+  JOIN customer_order_items coi ON coi.customer_order_id = co.customer_order_id
+  JOIN products p ON p.product_id = coi.product_id
+  JOIN product_categories pc ON pc.category_id = p.category_id
+  GROUP BY co.customer_order_id, sales_day, pc.category_name
+)
+SELECT
+  ocr.sales_day,
+  ocr.category_name,
+  count(DISTINCT ocr.customer_order_id) AS order_count,
+  sum(ocr.revenue)::numeric(18,2) AS revenue,
+  sum(COALESCE(audit_counts.audit_note_count, $2))::bigint AS audit_note_count
+FROM order_category_revenue ocr
+LEFT JOIN audit_counts ON audit_counts.customer_order_id = ocr.customer_order_id
+GROUP BY ocr.sales_day, ocr.category_name",10.997472,1,832,6
+"CREATE TABLE IF NOT EXISTS suppliers (
+  supplier_id BIGSERIAL PRIMARY KEY,
+  supplier_name TEXT NOT NULL UNIQUE,
+  email TEXT,
+  phone TEXT
+)",10.986570666666667,3,1832,0
+"CREATE TABLE IF NOT EXISTS customer_orders (
+  customer_order_id BIGSERIAL PRIMARY KEY,
+  customer_id BIGINT NOT NULL REFERENCES customers(customer_id),
+  delivery_address TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  status customer_order_status NOT NULL
+)",10.906842,1,824,0
+"CREATE TABLE IF NOT EXISTS supplier_orders (
+  supplier_order_id BIGSERIAL PRIMARY KEY,
+  supplier_id BIGINT NOT NULL REFERENCES suppliers(supplier_id),
+  created_by_employee_id BIGINT NOT NULL REFERENCES employees(employee_id),
+  order_date DATE NOT NULL,
+  status supplier_order_status NOT NULL
+)",10.901724333333334,3,2482,0
+"CREATE MATERIALIZED VIEW mv_revenue_by_day_category AS
+WITH audit_counts AS (
+  SELECT
+    customer_order_id,
+    count(*) AS audit_note_count
+  FROM customer_order_audit_notes
+  GROUP BY customer_order_id
+),
+order_category_revenue AS (
+  SELECT
+    co.customer_order_id,
+    date_trunc($1, co.created_at)::date AS sales_day,
+    pc.category_name,
+    sum(coi.ordered_quantity * coi.sale_price) AS revenue
+  FROM customer_orders co
+  JOIN customer_order_items coi ON coi.customer_order_id = co.customer_order_id
+  JOIN products p ON p.product_id = coi.product_id
+  JOIN product_categories pc ON pc.category_id = p.category_id
+  GROUP BY co.customer_order_id, sales_day, pc.category_name
+)
+SELECT
+  ocr.sales_day,
+  ocr.category_name,
+  count(DISTINCT ocr.customer_order_id) AS order_count,
+  sum(ocr.revenue)::numeric(18,2) AS revenue,
+  sum(COALESCE(audit_counts.audit_note_count, $2))::bigint AS audit_note_count
+FROM order_category_revenue ocr
+LEFT JOIN audit_counts ON audit_counts.customer_order_id = ocr.customer_order_id
+GROUP BY ocr.sales_day, ocr.category_name",10.873119500000001,2,1685,6
+"CREATE TABLE IF NOT EXISTS employees (
+  employee_id BIGSERIAL PRIMARY KEY,
+  full_name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  position_name TEXT NOT NULL,
+  hired_at DATE NOT NULL
+)",10.611437,1,599,0
+"CREATE INDEX IF NOT EXISTS idx_customer_order_audit_notes_order_created
+  ON customer_order_audit_notes (customer_order_id, created_at DESC)",10.597679000000001,3,854,0
+"CREATE TABLE IF NOT EXISTS suppliers (
+  supplier_id BIGSERIAL PRIMARY KEY,
+  supplier_name TEXT NOT NULL UNIQUE,
+  email TEXT,
+  phone TEXT
+)",10.58791,3,1821,0
+"CREATE TABLE public.databasechangelog (ID VARCHAR(255) NOT NULL, AUTHOR VARCHAR(255) NOT NULL, FILENAME VARCHAR(255) NOT NULL, DATEEXECUTED TIMESTAMP WITHOUT TIME ZONE NOT NULL, ORDEREXECUTED INTEGER NOT NULL, EXECTYPE VARCHAR(10) NOT NULL, MD5SUM VARCHAR(35), DESCRIPTION VARCHAR(255), COMMENTS VARCHAR(255), TAG VARCHAR(255), LIQUIBASE VARCHAR(20), CONTEXTS VARCHAR(255), LABELS VARCHAR(255), DEPLOYMENT_ID VARCHAR(10))",10.527619,1,401,16
+"CREATE TABLE IF NOT EXISTS warehouses (
+  warehouse_id BIGSERIAL PRIMARY KEY,
+  warehouse_name TEXT NOT NULL UNIQUE,
+  city TEXT NOT NULL
+)",10.393959666666666,3,1814,0
+"CREATE TABLE IF NOT EXISTS customer_orders (
+  customer_order_id BIGSERIAL PRIMARY KEY,
+  customer_id BIGINT NOT NULL REFERENCES customers(customer_id),
+  delivery_address TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  status customer_order_status NOT NULL
+)",10.381931333333334,3,2504,0
+"CREATE TABLE IF NOT EXISTS customer_order_audit_notes (
+  audit_note_id BIGSERIAL PRIMARY KEY,
+  customer_order_id BIGINT NOT NULL REFERENCES customer_orders(customer_order_id),
+  note_type TEXT NOT NULL,
+  note_text TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)",10.215992666666667,3,2735,0
+"CREATE TABLE IF NOT EXISTS employees (
+  employee_id BIGSERIAL PRIMARY KEY,
+  full_name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  position_name TEXT NOT NULL,
+  hired_at DATE NOT NULL
+)",10.134849333333333,3,1877,0
+"CREATE TABLE IF NOT EXISTS product_categories (
+  category_id BIGSERIAL PRIMARY KEY,
+  category_name TEXT NOT NULL UNIQUE
+)",10.041413,1,607,0
+"CREATE TABLE IF NOT EXISTS brands (
+  brand_id BIGSERIAL PRIMARY KEY,
+  brand_name TEXT NOT NULL UNIQUE
+)",9.923688666666667,3,1768,0
+"CREATE TABLE IF NOT EXISTS suppliers (
+  supplier_id BIGSERIAL PRIMARY KEY,
+  supplier_name TEXT NOT NULL UNIQUE,
+  email TEXT,
+  phone TEXT
+)",9.830005,1,611,0
+"CREATE TABLE IF NOT EXISTS employees (
+  employee_id BIGSERIAL PRIMARY KEY,
+  full_name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  position_name TEXT NOT NULL,
+  hired_at DATE NOT NULL
+)",9.789262666666668,3,1837,0
+"CREATE TABLE IF NOT EXISTS supplier_order_items (
+  supplier_order_item_id BIGSERIAL PRIMARY KEY,
+  supplier_order_id BIGINT NOT NULL REFERENCES supplier_orders(supplier_order_id),
+  product_id BIGINT NOT NULL REFERENCES products(product_id),
+  ordered_quantity NUMERIC(14,3) NOT NULL,
+  unit_price NUMERIC(14,2) NOT NULL,
+  CONSTRAINT uq_supplier_order_items UNIQUE (supplier_order_id, product_id)
+)",9.698448,1,727,0
+"CREATE TABLE IF NOT EXISTS customer_order_audit_notes (
+  audit_note_id BIGSERIAL PRIMARY KEY,
+  customer_order_id BIGINT NOT NULL REFERENCES customer_orders(customer_order_id),
+  note_type TEXT NOT NULL,
+  note_text TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)",9.678929,1,928,0
+"CREATE TABLE IF NOT EXISTS warehouses (
+  warehouse_id BIGSERIAL PRIMARY KEY,
+  warehouse_name TEXT NOT NULL UNIQUE,
+  city TEXT NOT NULL
+)",9.413588,1,610,0
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements,9.271101666666667,3,7921,13
+"CREATE TABLE IF NOT EXISTS customer_orders (
+  customer_order_id BIGSERIAL PRIMARY KEY,
+  customer_id BIGINT NOT NULL REFERENCES customers(customer_id),
+  delivery_address TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  status customer_order_status NOT NULL
+)",9.238833666666666,3,2509,0
+"CREATE TABLE IF NOT EXISTS goods_receipt_items (
+  goods_receipt_item_id BIGSERIAL PRIMARY KEY,
+  goods_receipt_id BIGINT NOT NULL REFERENCES goods_receipts(goods_receipt_id),
+  supplier_order_item_id BIGINT NOT NULL REFERENCES supplier_order_items(supplier_order_item_id),
+  received_quantity NUMERIC(14,3) NOT NULL,
+  unit_cost NUMERIC(14,2) NOT NULL,
+  expiration_date DATE,
+  CONSTRAINT uq_goods_receipt_items UNIQUE (goods_receipt_id, supplier_order_item_id)
+)",9.206495666666667,3,2197,1
+"CREATE TABLE IF NOT EXISTS product_categories (
+  category_id BIGSERIAL PRIMARY KEY,
+  category_name TEXT NOT NULL UNIQUE
+)",9.106758333333332,3,1794,0
+"CREATE TABLE IF NOT EXISTS order_status_events (
+  order_status_event_id BIGSERIAL PRIMARY KEY,
+  customer_order_id BIGINT NOT NULL REFERENCES customer_orders(customer_order_id),
+  old_status customer_order_status,
+  new_status customer_order_status NOT NULL,
+  event_source TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)",8.893944999999999,3,2617,0
+"CREATE TABLE IF NOT EXISTS customer_order_items (
+  customer_order_item_id BIGSERIAL PRIMARY KEY,
+  customer_order_id BIGINT NOT NULL REFERENCES customer_orders(customer_order_id),
+  product_id BIGINT NOT NULL REFERENCES products(product_id),
+  ordered_quantity NUMERIC(14,3) NOT NULL,
+  sale_price NUMERIC(14,2) NOT NULL,
+  CONSTRAINT uq_customer_order_items UNIQUE (customer_order_id, product_id)
+)",8.886386,1,784,0
+"CREATE TABLE IF NOT EXISTS goods_receipt_items (
+  goods_receipt_item_id BIGSERIAL PRIMARY KEY,
+  goods_receipt_id BIGINT NOT NULL REFERENCES goods_receipts(goods_receipt_id),
+  supplier_order_item_id BIGINT NOT NULL REFERENCES supplier_order_items(supplier_order_item_id),
+  received_quantity NUMERIC(14,3) NOT NULL,
+  unit_cost NUMERIC(14,2) NOT NULL,
+  expiration_date DATE,
+  CONSTRAINT uq_goods_receipt_items UNIQUE (goods_receipt_id, supplier_order_item_id)
+)",8.878033,3,2198,0
+"CREATE MATERIALIZED VIEW mv_revenue_by_day_category AS
+WITH audit_counts AS (
+  SELECT
+    customer_order_id,
+    count(*) AS audit_note_count
+  FROM customer_order_audit_notes
+  GROUP BY customer_order_id
+),
+order_category_revenue AS (
+  SELECT
+    co.customer_order_id,
+    date_trunc($1, co.created_at)::date AS sales_day,
+    pc.category_name,
+    sum(coi.ordered_quantity * coi.sale_price) AS revenue
+  FROM customer_orders co
+  JOIN customer_order_items coi ON coi.customer_order_id = co.customer_order_id
+  JOIN products p ON p.product_id = coi.product_id
+  JOIN product_categories pc ON pc.category_id = p.category_id
+  GROUP BY co.customer_order_id, sales_day, pc.category_name
+)
+SELECT
+  ocr.sales_day,
+  ocr.category_name,
+  count(DISTINCT ocr.customer_order_id) AS order_count,
+  sum(ocr.revenue)::numeric(18,2) AS revenue,
+  sum(COALESCE(audit_counts.audit_note_count, $2))::bigint AS audit_note_count
+FROM order_category_revenue ocr
+LEFT JOIN audit_counts ON audit_counts.customer_order_id = ocr.customer_order_id
+GROUP BY ocr.sales_day, ocr.category_name",8.83905,1,831,6
+"CREATE TABLE IF NOT EXISTS brands (
+  brand_id BIGSERIAL PRIMARY KEY,
+  brand_name TEXT NOT NULL UNIQUE
+)",8.692729666666667,3,1769,0
+"CREATE MATERIALIZED VIEW mv_revenue_by_day_category AS
+WITH audit_counts AS (
+  SELECT
+    customer_order_id,
+    count(*) AS audit_note_count
+  FROM customer_order_audit_notes
+  GROUP BY customer_order_id
+),
+order_category_revenue AS (
+  SELECT
+    co.customer_order_id,
+    date_trunc($1, co.created_at)::date AS sales_day,
+    pc.category_name,
+    sum(coi.ordered_quantity * coi.sale_price) AS revenue
+  FROM customer_orders co
+  JOIN customer_order_items coi ON coi.customer_order_id = co.customer_order_id
+  JOIN products p ON p.product_id = coi.product_id
+  JOIN product_categories pc ON pc.category_id = p.category_id
+  GROUP BY co.customer_order_id, sales_day, pc.category_name
+)
+SELECT
+  ocr.sales_day,
+  ocr.category_name,
+  count(DISTINCT ocr.customer_order_id) AS order_count,
+  sum(ocr.revenue)::numeric(18,2) AS revenue,
+  sum(COALESCE(audit_counts.audit_note_count, $2))::bigint AS audit_note_count
+FROM order_category_revenue ocr
+LEFT JOIN audit_counts ON audit_counts.customer_order_id = ocr.customer_order_id
+GROUP BY ocr.sales_day, ocr.category_name",8.661046500000001,2,1686,6
+"CREATE TABLE IF NOT EXISTS shipment_items (
+  shipment_item_id BIGSERIAL PRIMARY KEY,
+  shipment_id BIGINT NOT NULL REFERENCES shipments(shipment_id),
+  customer_order_item_id BIGINT NOT NULL REFERENCES customer_order_items(customer_order_item_id),
+  shipped_quantity NUMERIC(14,3) NOT NULL,
+  CONSTRAINT uq_shipment_items UNIQUE (shipment_id, customer_order_item_id)
+)",8.570376333333334,3,2244,0
+"CREATE TABLE IF NOT EXISTS order_status_events (
+  order_status_event_id BIGSERIAL PRIMARY KEY,
+  customer_order_id BIGINT NOT NULL REFERENCES customer_orders(customer_order_id),
+  old_status customer_order_status,
+  new_status customer_order_status NOT NULL,
+  event_source TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)",8.308328333333334,3,2611,0
+"CREATE MATERIALIZED VIEW mv_revenue_by_day_category AS
+WITH audit_counts AS (
+  SELECT
+    customer_order_id,
+    count(*) AS audit_note_count
+  FROM customer_order_audit_notes
+  GROUP BY customer_order_id
+),
+order_category_revenue AS (
+  SELECT
+    co.customer_order_id,
+    date_trunc($1, co.created_at)::date AS sales_day,
+    pc.category_name,
+    sum(coi.ordered_quantity * coi.sale_price) AS revenue
+  FROM customer_orders co
+  JOIN customer_order_items coi ON coi.customer_order_id = co.customer_order_id
+  JOIN products p ON p.product_id = coi.product_id
+  JOIN product_categories pc ON pc.category_id = p.category_id
+  GROUP BY co.customer_order_id, sales_day, pc.category_name
+)
+SELECT
+  ocr.sales_day,
+  ocr.category_name,
+  count(DISTINCT ocr.customer_order_id) AS order_count,
+  sum(ocr.revenue)::numeric(18,2) AS revenue,
+  sum(COALESCE(audit_counts.audit_note_count, $2))::bigint AS audit_note_count
+FROM order_category_revenue ocr
+LEFT JOIN audit_counts ON audit_counts.customer_order_id = ocr.customer_order_id
+GROUP BY ocr.sales_day, ocr.category_name",7.948427,1,833,6
+"CREATE TABLE IF NOT EXISTS supplier_order_items (
+  supplier_order_item_id BIGSERIAL PRIMARY KEY,
+  supplier_order_id BIGINT NOT NULL REFERENCES supplier_orders(supplier_order_id),
+  product_id BIGINT NOT NULL REFERENCES products(product_id),
+  ordered_quantity NUMERIC(14,3) NOT NULL,
+  unit_price NUMERIC(14,2) NOT NULL,
+  CONSTRAINT uq_supplier_order_items UNIQUE (supplier_order_id, product_id)
+)",7.860558999999999,3,2215,0
+"CREATE TABLE IF NOT EXISTS order_status_events (
+  order_status_event_id BIGSERIAL PRIMARY KEY,
+  customer_order_id BIGINT NOT NULL REFERENCES customer_orders(customer_order_id),
+  old_status customer_order_status,
+  new_status customer_order_status NOT NULL,
+  event_source TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)",7.835816,1,856,0
+"CREATE TABLE IF NOT EXISTS supplier_order_items (
+  supplier_order_item_id BIGSERIAL PRIMARY KEY,
+  supplier_order_id BIGINT NOT NULL REFERENCES supplier_orders(supplier_order_id),
+  product_id BIGINT NOT NULL REFERENCES products(product_id),
+  ordered_quantity NUMERIC(14,3) NOT NULL,
+  unit_price NUMERIC(14,2) NOT NULL,
+  CONSTRAINT uq_supplier_order_items UNIQUE (supplier_order_id, product_id)
+)",7.812978,3,2223,0
+"CREATE TABLE IF NOT EXISTS shipment_items (
+  shipment_item_id BIGSERIAL PRIMARY KEY,
+  shipment_id BIGINT NOT NULL REFERENCES shipments(shipment_id),
+  customer_order_item_id BIGINT NOT NULL REFERENCES customer_order_items(customer_order_item_id),
+  shipped_quantity NUMERIC(14,3) NOT NULL,
+  CONSTRAINT uq_shipment_items UNIQUE (shipment_id, customer_order_item_id)
+)",7.576332333333333,3,2230,0
+"CREATE TABLE IF NOT EXISTS brands (
+  brand_id BIGSERIAL PRIMARY KEY,
+  brand_name TEXT NOT NULL UNIQUE
+)",7.491408,1,570,0
+"CREATE TABLE IF NOT EXISTS customer_order_items (
+  customer_order_item_id BIGSERIAL PRIMARY KEY,
+  customer_order_id BIGINT NOT NULL REFERENCES customer_orders(customer_order_id),
+  product_id BIGINT NOT NULL REFERENCES products(product_id),
+  ordered_quantity NUMERIC(14,3) NOT NULL,
+  sale_price NUMERIC(14,2) NOT NULL,
+  CONSTRAINT uq_customer_order_items UNIQUE (customer_order_id, product_id)
+)",7.431002666666666,3,2273,0
+"CREATE TABLE IF NOT EXISTS shipment_items (
+  shipment_item_id BIGSERIAL PRIMARY KEY,
+  shipment_id BIGINT NOT NULL REFERENCES shipments(shipment_id),
+  customer_order_item_id BIGINT NOT NULL REFERENCES customer_order_items(customer_order_item_id),
+  shipped_quantity NUMERIC(14,3) NOT NULL,
+  CONSTRAINT uq_shipment_items UNIQUE (shipment_id, customer_order_item_id)
+)",7.425599,1,760,0
+"DO $$
+DECLARE
+  exporter_user text := 'postgres_exporter';
+  exporter_password text := 'postgres_exporter_password';
+BEGIN
+  IF exporter_user IS NULL OR exporter_user = '' THEN
+    RAISE EXCEPTION 'postgresExporterUser must be provided';
+  END IF;
+
+  IF exporter_password IS NULL OR exporter_password = '' THEN
+    RAISE EXCEPTION 'postgresExporterPassword must be provided';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_roles
+    WHERE rolname = exporter_user
+  ) THEN
+    EXECUTE format(
+      'CREATE ROLE %I WITH LOGIN PASSWORD %L',
+      exporter_user,
+      exporter_password
+    );
+  ELSE
+    EXECUTE format(
+      'ALTER ROLE %I WITH LOGIN PASSWORD %L',
+      exporter_user,
+      exporter_password
+    );
+  END IF;
+
+  EXECUTE format('GRANT pg_monitor TO %I', exporter_user);
+  EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), exporter_user);
+END $$",7.414857333333333,3,615,0
+"CREATE TABLE IF NOT EXISTS customer_order_items (
+  customer_order_item_id BIGSERIAL PRIMARY KEY,
+  customer_order_id BIGINT NOT NULL REFERENCES customer_orders(customer_order_id),
+  product_id BIGINT NOT NULL REFERENCES products(product_id),
+  ordered_quantity NUMERIC(14,3) NOT NULL,
+  sale_price NUMERIC(14,2) NOT NULL,
+  CONSTRAINT uq_customer_order_items UNIQUE (customer_order_id, product_id)
+)",7.015996666666666,3,2279,0
+"CREATE TABLE IF NOT EXISTS shipments (
+  shipment_id BIGSERIAL PRIMARY KEY,
+  customer_order_id BIGINT NOT NULL REFERENCES customer_orders(customer_order_id),
+  warehouse_id BIGINT NOT NULL REFERENCES warehouses(warehouse_id),
+  shipped_by_employee_id BIGINT NOT NULL REFERENCES employees(employee_id),
+  shipped_at TIMESTAMPTZ NOT NULL,
+  status shipment_status NOT NULL
+)",6.8797896666666665,3,2944,0
+"CREATE TABLE IF NOT EXISTS shipments (
+  shipment_id BIGSERIAL PRIMARY KEY,
+  customer_order_id BIGINT NOT NULL REFERENCES customer_orders(customer_order_id),
+  warehouse_id BIGINT NOT NULL REFERENCES warehouses(warehouse_id),
+  shipped_by_employee_id BIGINT NOT NULL REFERENCES employees(employee_id),
+  shipped_at TIMESTAMPTZ NOT NULL,
+  status shipment_status NOT NULL
+)",6.838976,1,998,0
+"CREATE TABLE IF NOT EXISTS goods_receipt_items (
+  goods_receipt_item_id BIGSERIAL PRIMARY KEY,
+  goods_receipt_id BIGINT NOT NULL REFERENCES goods_receipts(goods_receipt_id),
+  supplier_order_item_id BIGINT NOT NULL REFERENCES supplier_order_items(supplier_order_item_id),
+  received_quantity NUMERIC(14,3) NOT NULL,
+  unit_cost NUMERIC(14,2) NOT NULL,
+  expiration_date DATE,
+  CONSTRAINT uq_goods_receipt_items UNIQUE (goods_receipt_id, supplier_order_item_id)
+)",6.777823,1,752,0
+"CREATE TABLE public.databasechangeloglock (ID INTEGER NOT NULL, LOCKED BOOLEAN NOT NULL, LOCKGRANTED TIMESTAMP WITHOUT TIME ZONE, LOCKEDBY VARCHAR(255), CONSTRAINT databasechangeloglock_pkey PRIMARY KEY (ID))",6.649574,1,272,0
+"CREATE INDEX IF NOT EXISTS idx_inventory_movements_moved_warehouse_product
+  ON inventory_movements (moved_at, warehouse_id, product_id, movement_type)",6.424079666666666,3,1118,0
+"CREATE TABLE IF NOT EXISTS supplier_orders (
+  supplier_order_id BIGSERIAL PRIMARY KEY,
+  supplier_id BIGINT NOT NULL REFERENCES suppliers(supplier_id),
+  created_by_employee_id BIGINT NOT NULL REFERENCES employees(employee_id),
+  order_date DATE NOT NULL,
+  status supplier_order_status NOT NULL
+)",6.211379,1,834,0
+"CREATE TABLE public.databasechangelog (ID VARCHAR(255) NOT NULL, AUTHOR VARCHAR(255) NOT NULL, FILENAME VARCHAR(255) NOT NULL, DATEEXECUTED TIMESTAMP WITHOUT TIME ZONE NOT NULL, ORDEREXECUTED INTEGER NOT NULL, EXECTYPE VARCHAR(10) NOT NULL, MD5SUM VARCHAR(35), DESCRIPTION VARCHAR(255), COMMENTS VARCHAR(255), TAG VARCHAR(255), LIQUIBASE VARCHAR(20), CONTEXTS VARCHAR(255), LABELS VARCHAR(255), DEPLOYMENT_ID VARCHAR(10))",6.131653,1,417,0
+"DO $$
+DECLARE
+  exporter_user text := 'postgres_exporter';
+  exporter_password text := 'postgres_exporter_password';
+BEGIN
+  IF exporter_user IS NULL OR exporter_user = '' THEN
+    RAISE EXCEPTION 'postgresExporterUser must be provided';
+  END IF;
+
+  IF exporter_password IS NULL OR exporter_password = '' THEN
+    RAISE EXCEPTION 'postgresExporterPassword must be provided';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_roles
+    WHERE rolname = exporter_user
+  ) THEN
+    EXECUTE format(
+      'CREATE ROLE %I WITH LOGIN PASSWORD %L',
+      exporter_user,
+      exporter_password
+    );
+  ELSE
+    EXECUTE format(
+      'ALTER ROLE %I WITH LOGIN PASSWORD %L',
+      exporter_user,
+      exporter_password
+    );
+  END IF;
+
+  EXECUTE format('GRANT pg_monitor TO %I', exporter_user);
+  EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), exporter_user);
+END $$",6.076245,1,205,0
+"CREATE INDEX IF NOT EXISTS idx_customer_order_audit_notes_order_created
+  ON customer_order_audit_notes (customer_order_id, created_at DESC)",5.8951,1,262,0
+"CREATE INDEX IF NOT EXISTS idx_mv_revenue_by_day_category_revenue
+  ON mv_revenue_by_day_category (revenue DESC)",5.8844,1,127,0
+"DO $$
+DECLARE
+  exporter_user text := 'postgres_exporter';
+  exporter_password text := 'postgres_exporter_password';
+BEGIN
+  IF exporter_user IS NULL OR exporter_user = '' THEN
+    RAISE EXCEPTION 'postgresExporterUser must be provided';
+  END IF;
+
+  IF exporter_password IS NULL OR exporter_password = '' THEN
+    RAISE EXCEPTION 'postgresExporterPassword must be provided';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_roles
+    WHERE rolname = exporter_user
+  ) THEN
+    EXECUTE format(
+      'CREATE ROLE %I WITH LOGIN PASSWORD %L',
+      exporter_user,
+      exporter_password
+    );
+  ELSE
+    EXECUTE format(
+      'ALTER ROLE %I WITH LOGIN PASSWORD %L',
+      exporter_user,
+      exporter_password
+    );
+  END IF;
+
+  EXECUTE format('GRANT pg_monitor TO %I', exporter_user);
+  EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), exporter_user);
+END $$",5.8674013333333335,3,642,13
+"CREATE TABLE IF NOT EXISTS goods_receipts (
+  goods_receipt_id BIGSERIAL PRIMARY KEY,
+  supplier_order_id BIGINT NOT NULL REFERENCES supplier_orders(supplier_order_id),
+  warehouse_id BIGINT NOT NULL REFERENCES warehouses(warehouse_id),
+  accepted_by_employee_id BIGINT NOT NULL REFERENCES employees(employee_id),
+  received_at TIMESTAMPTZ NOT NULL
+)",5.830707,3,2230,0
+"CREATE INDEX IF NOT EXISTS idx_customer_order_audit_notes_order_created
+  ON customer_order_audit_notes (customer_order_id, created_at DESC)",5.781328666666666,3,775,0
+"CREATE TABLE IF NOT EXISTS inventory_movements (
+  inventory_movement_id BIGSERIAL PRIMARY KEY,
+  product_id BIGINT NOT NULL REFERENCES products(product_id),
+  warehouse_id BIGINT NOT NULL REFERENCES warehouses(warehouse_id),
+  movement_type inventory_movement_type NOT NULL,
+  quantity NUMERIC(14,3) NOT NULL,
+  moved_at TIMESTAMPTZ NOT NULL,
+  employee_id BIGINT NOT NULL REFERENCES employees(employee_id)
+)",5.68563,1,760,0
+"CREATE TABLE IF NOT EXISTS supplier_orders (
+  supplier_order_id BIGSERIAL PRIMARY KEY,
+  supplier_id BIGINT NOT NULL REFERENCES suppliers(supplier_id),
+  created_by_employee_id BIGINT NOT NULL REFERENCES employees(employee_id),
+  order_date DATE NOT NULL,
+  status supplier_order_status NOT NULL
+)",5.669947333333333,3,2488,1
+"CREATE TABLE public.databasechangelog (ID VARCHAR(255) NOT NULL, AUTHOR VARCHAR(255) NOT NULL, FILENAME VARCHAR(255) NOT NULL, DATEEXECUTED TIMESTAMP WITHOUT TIME ZONE NOT NULL, ORDEREXECUTED INTEGER NOT NULL, EXECTYPE VARCHAR(10) NOT NULL, MD5SUM VARCHAR(35), DESCRIPTION VARCHAR(255), COMMENTS VARCHAR(255), TAG VARCHAR(255), LIQUIBASE VARCHAR(20), CONTEXTS VARCHAR(255), LABELS VARCHAR(255), DEPLOYMENT_ID VARCHAR(10))",5.61697,1,417,0
+"CREATE TABLE IF NOT EXISTS seed_history (
+  seed_version integer PRIMARY KEY,
+  seed_count integer NOT NULL,
+  app_env text NOT NULL,
+  applied_at timestamptz NOT NULL DEFAULT now()
+)",5.53495,2,768,0
+"CREATE TABLE IF NOT EXISTS goods_receipts (
+  goods_receipt_id BIGSERIAL PRIMARY KEY,
+  supplier_order_id BIGINT NOT NULL REFERENCES supplier_orders(supplier_order_id),
+  warehouse_id BIGINT NOT NULL REFERENCES warehouses(warehouse_id),
+  accepted_by_employee_id BIGINT NOT NULL REFERENCES employees(employee_id),
+  received_at TIMESTAMPTZ NOT NULL
+)",5.469022,1,746,0
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements,5.270113,1,2642,0
+"CREATE INDEX IF NOT EXISTS idx_customer_orders_status_created_at
+  ON customer_orders (status, created_at)",5.239411,1,167,0
+"CREATE INDEX IF NOT EXISTS idx_inventory_movements_moved_at
+  ON inventory_movements (moved_at)",4.906598,1,119,0
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO warehouse_user,4.7539795,2,197,53
+"CREATE TABLE IF NOT EXISTS inventory_movements (
+  inventory_movement_id BIGSERIAL PRIMARY KEY,
+  product_id BIGINT NOT NULL REFERENCES products(product_id),
+  warehouse_id BIGINT NOT NULL REFERENCES warehouses(warehouse_id),
+  movement_type inventory_movement_type NOT NULL,
+  quantity NUMERIC(14,3) NOT NULL,
+  moved_at TIMESTAMPTZ NOT NULL,
+  employee_id BIGINT NOT NULL REFERENCES employees(employee_id)
+)",4.659637666666667,3,2305,0
+"CREATE UNIQUE INDEX IF NOT EXISTS uq_mv_revenue_by_day_category_day_category
+  ON mv_revenue_by_day_category (sales_day, category_name)",4.608578,1,149,0
+"CREATE UNIQUE INDEX IF NOT EXISTS uq_mv_revenue_by_day_category_day_category
+  ON mv_revenue_by_day_category (sales_day, category_name)",4.576252666666667,3,453,0
+"WITH target_order AS (
+  SELECT customer_order_id, status AS old_status
+  FROM customer_orders
+  WHERE customer_order_id = $1
+  FOR UPDATE
+),
+updated_order AS (
+  UPDATE customer_orders co
+  SET status = $2::customer_order_status,
+      last_status_changed_at = now()
+  FROM target_order
+  WHERE co.customer_order_id = target_order.customer_order_id
+  RETURNING co.customer_order_id, co.status AS new_status
+),
+inserted_event AS (
+  INSERT INTO order_status_events (
+    customer_order_id,
+    old_status,
+    new_status,
+    event_source,
+    created_at
+  )
+  SELECT
+    target_order.customer_order_id,
+    target_order.old_status,
+    updated_order.new_status,
+    $3,
+    now()
+  FROM target_order
+  JOIN updated_order ON updated_order.customer_order_id = target_order.customer_order_id
+  RETURNING order_status_event_id
+),
+inserted_audit_note AS (
+  INSERT INTO customer_order_audit_notes (
+    customer_order_id,
+    note_type,
+    note_text,
+    created_at
+  )
+  SELECT
+    target_order.customer_order_id,
+    $4,
+    format($5, target_order.old_status, updated_order.new_status),
+    now()
+  FROM target_order
+  JOIN updated_order ON updated_order.customer_order_id = target_order.customer_order_id
+  RETURNING audit_note_id
+)
+SELECT
+  target_order.customer_order_id,
+  target_order.old_status::text AS old_status,
+  updated_order.new_status::text AS new_status,
+  inserted_event.order_status_event_id,
+  inserted_audit_note.audit_note_id
+FROM target_order
+JOIN updated_order ON updated_order.customer_order_id = target_order.customer_order_id
+JOIN inserted_event ON $6
+JOIN inserted_audit_note ON $7",4.54858875038357,8473,376527,4
+"CREATE TABLE IF NOT EXISTS goods_receipts (
+  goods_receipt_id BIGSERIAL PRIMARY KEY,
+  supplier_order_id BIGINT NOT NULL REFERENCES supplier_orders(supplier_order_id),
+  warehouse_id BIGINT NOT NULL REFERENCES warehouses(warehouse_id),
+  accepted_by_employee_id BIGINT NOT NULL REFERENCES employees(employee_id),
+  received_at TIMESTAMPTZ NOT NULL
+)",4.4721063333333335,3,2233,0
+"CREATE TABLE IF NOT EXISTS inventory_movements (
+  inventory_movement_id BIGSERIAL PRIMARY KEY,
+  product_id BIGINT NOT NULL REFERENCES products(product_id),
+  warehouse_id BIGINT NOT NULL REFERENCES warehouses(warehouse_id),
+  movement_type inventory_movement_type NOT NULL,
+  quantity NUMERIC(14,3) NOT NULL,
+  moved_at TIMESTAMPTZ NOT NULL,
+  employee_id BIGINT NOT NULL REFERENCES employees(employee_id)
+)",4.462508,3,2348,0
+"CREATE INDEX IF NOT EXISTS idx_order_status_events_order_created_at
+  ON order_status_events (customer_order_id, created_at DESC)",4.290173,1,110,0
+ALTER ROLE postgres_exporter WITH LOGIN PASSWORD 'postgres_exporter_password',4.274329666666667,3,9,0
+CREATE ROLE postgres_exporter WITH LOGIN PASSWORD 'postgres_exporter_password',4.208157,1,8,0
+"CREATE TABLE public.databasechangeloglock (ID INTEGER NOT NULL, LOCKED BOOLEAN NOT NULL, LOCKGRANTED TIMESTAMP WITHOUT TIME ZONE, LOCKEDBY VARCHAR(255), CONSTRAINT databasechangeloglock_pkey PRIMARY KEY (ID))",4.148143,1,276,1
+"CREATE INDEX IF NOT EXISTS idx_mv_revenue_by_day_category_revenue
+  ON mv_revenue_by_day_category (revenue DESC)",4.1429263333333335,3,389,0
+"CREATE INDEX IF NOT EXISTS idx_customer_orders_created_at
+  ON customer_orders (created_at)",3.9007053333333332,3,440,0
+ALTER ROLE postgres_exporter WITH LOGIN PASSWORD 'postgres_exporter_password',3.801553,1,3,0
+"CREATE UNIQUE INDEX IF NOT EXISTS uq_mv_revenue_by_day_category_day_category
+  ON mv_revenue_by_day_category (sales_day, category_name)",3.759017666666667,3,453,0
+"CREATE INDEX IF NOT EXISTS idx_order_status_events_order_created_at
+  ON order_status_events (customer_order_id, created_at DESC)",3.7464296666666668,3,336,0
+ALTER ROLE postgres_exporter WITH LOGIN PASSWORD 'postgres_exporter_password',3.6914524999999996,2,6,0
+"CREATE INDEX IF NOT EXISTS idx_order_status_events_created_at
+  ON order_status_events (created_at)",3.683349,1,89,0
+"CREATE INDEX IF NOT EXISTS idx_mv_revenue_by_day_category_revenue
+  ON mv_revenue_by_day_category (revenue DESC)",3.670021333333333,3,386,0
+"DO $$
+BEGIN
+  CREATE TYPE supplier_order_status AS ENUM (
+    'draft',
+    'placed',
+    'partially_received',
+    'received',
+    'cancelled'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$",3.6512216666666673,3,451,1
+"CREATE INDEX IF NOT EXISTS idx_inventory_movements_warehouse_moved_at
+  ON inventory_movements (warehouse_id, moved_at)",3.648447,1,108,0
+"CREATE INDEX IF NOT EXISTS idx_inventory_movements_moved_at
+  ON inventory_movements (moved_at)",3.6200553333333336,3,372,0
+"CREATE INDEX IF NOT EXISTS idx_customer_orders_created_at
+  ON customer_orders (created_at)",3.530142,1,143,0
+"CREATE INDEX IF NOT EXISTS idx_customer_order_items_order_id
+  ON customer_order_items (customer_order_id)",3.519342,1,118,0
+"SELECT
+            c.table_name,
+            c.column_name,
+            c.data_type,
+            c.udt_name,
+            t.typtype,
+            t.typcategory,
+            CASE WHEN t.typtype = $1 THEN $2 ELSE a.atttypid END AS type_oid,
+            c.datetime_precision,
+            c.is_nullable,
+            c.collation_name,
+            c.is_identity,
+            c.identity_generation,
+            c.is_generated,
+            c.generation_expression,
+            c.column_default,
+            c.character_maximum_length,
+            c.numeric_precision,
+            c.numeric_scale
+        FROM information_schema.columns c
+        JOIN pg_catalog.pg_type t
+            ON c.udt_name = t.typname
+        JOIN pg_catalog.pg_attribute a
+            ON a.attrelid = (c.table_schema||$3||c.table_name)::regclass
+            AND a.attname = c.column_name
+        WHERE c.table_schema = $4
+        ORDER BY c.table_name, c.ordinal_position",3.4664825205479466,73,60925,23
+"SELECT
+            c.table_name,
+            c.column_name,
+            c.data_type,
+            c.udt_name,
+            t.typtype,
+            t.typcategory,
+            CASE WHEN t.typtype = $1 THEN $2 ELSE a.atttypid END AS type_oid,
+            c.datetime_precision,
+            c.is_nullable,
+            c.collation_name,
+            c.is_identity,
+            c.identity_generation,
+            c.is_generated,
+            c.generation_expression,
+            c.column_default,
+            c.character_maximum_length,
+            c.numeric_precision,
+            c.numeric_scale
+        FROM information_schema.columns c
+        JOIN pg_catalog.pg_type t
+            ON c.udt_name = t.typname
+        JOIN pg_catalog.pg_attribute a
+            ON a.attrelid = (c.table_schema||$3||c.table_name)::regclass
+            AND a.attname = c.column_name
+        WHERE c.table_schema = $4
+        ORDER BY c.table_name, c.ordinal_position",3.4522043676470586,68,55599,0
+"CREATE INDEX IF NOT EXISTS idx_inventory_movements_warehouse_moved_at
+  ON inventory_movements (warehouse_id, moved_at)",3.3851743333333335,3,330,0
+INSERT INTO public.mv_revenue_by_day_category SELECT (diff.newdata).* FROM pg_temp_22.pg_temp_17945_2 diff WHERE tid IS NULL,3.366004,1,855,0
+"CREATE INDEX IF NOT EXISTS idx_order_status_events_created_at
+  ON order_status_events (created_at)",3.360477,3,271,0
+"CREATE INDEX IF NOT EXISTS idx_customer_order_items_product_id
+  ON customer_order_items (product_id)",3.3356383333333333,3,263,0
+"CREATE INDEX IF NOT EXISTS idx_order_status_events_order_created_at
+  ON order_status_events (customer_order_id, created_at DESC)",3.328012666666667,3,335,0
+"CREATE INDEX IF NOT EXISTS idx_order_status_events_created_at
+  ON order_status_events (created_at)",3.318636666666667,3,271,0
+"CREATE INDEX IF NOT EXISTS idx_customer_order_items_product_id
+  ON customer_order_items (product_id)",3.302034,1,88,0
+"CREATE INDEX IF NOT EXISTS idx_inventory_movements_warehouse_moved_at
+  ON inventory_movements (warehouse_id, moved_at)",3.1999733333333333,3,327,0
+"CREATE INDEX IF NOT EXISTS idx_customer_order_items_order_id
+  ON customer_order_items (customer_order_id)",3.1610270000000003,3,351,0
+"CREATE INDEX IF NOT EXISTS idx_customer_orders_status_created_at
+  ON customer_orders (status, created_at)",3.136492666666667,3,508,0
+"CREATE INDEX IF NOT EXISTS idx_customer_orders_status_created_at
+  ON customer_orders (status, created_at)",3.1315683333333335,3,508,0
+CREATE ROLE warehouse_user WITH LOGIN PASSWORD 'warehouse_password' CREATEDB,3.126759,1,5,3
+"CREATE INDEX IF NOT EXISTS idx_customer_orders_created_at
+  ON customer_orders (created_at)",3.1057696666666663,3,440,0
+"CREATE INDEX IF NOT EXISTS idx_customer_order_items_order_id
+  ON customer_order_items (customer_order_id)",3.096070666666667,3,351,0
+"CREATE INDEX IF NOT EXISTS idx_inventory_movements_moved_at
+  ON inventory_movements (moved_at)",3.0931633333333335,3,369,0
+"CREATE INDEX IF NOT EXISTS idx_customer_order_items_product_id
+  ON customer_order_items (product_id)",2.9976260000000003,3,263,0
+ALTER ROLE warehouse_user WITH LOGIN PASSWORD 'warehouse_password' CREATEDB,2.85151,1,3,0
+ANALYZE pg_temp_22.pg_temp_17945_2,2.0639245,2,112,0
+"SELECT
+  co.customer_order_id,
+  co.customer_id,
+  c.full_name,
+  co.delivery_address,
+  co.created_at,
+  co.status::text AS status,
+  co.delivery_priority,
+  co.total_amount,
+  co.items_count,
+  audit_notes.audit_note_count,
+  audit_notes.last_audit_note,
+  coi.customer_order_item_id,
+  coi.ordered_quantity,
+  coi.sale_price,
+  p.product_id,
+  p.product_name,
+  b.brand_name,
+  pc.category_name
+FROM customer_orders co
+JOIN customers c ON c.customer_id = co.customer_id
+JOIN customer_order_items coi ON coi.customer_order_id = co.customer_order_id
+JOIN products p ON p.product_id = coi.product_id
+JOIN brands b ON b.brand_id = p.brand_id
+JOIN product_categories pc ON pc.category_id = p.category_id
+LEFT JOIN LATERAL (
+  SELECT
+    count(*) AS audit_note_count,
+    (array_agg(aon.note_text ORDER BY aon.created_at DESC))[$2] AS last_audit_note
+  FROM customer_order_audit_notes aon
+  WHERE aon.customer_order_id = co.customer_order_id
+) audit_notes ON $3
+WHERE co.customer_order_id = $1
+ORDER BY coi.customer_order_item_id",1.9641702484114927,3305,160078,0
+"DO $$
+BEGIN
+  CREATE TYPE customer_order_status AS ENUM (
+    'new',
+    'confirmed',
+    'picking',
+    'shipped',
+    'delivered',
+    'cancelled'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$",1.630526,1,149,0
+DROP TABLE IF EXISTS products CASCADE,1.6232644999999999,2,1802,0
+DROP TABLE IF EXISTS inventory_movements CASCADE,1.5979325000000002,2,1792,0
+DROP TABLE IF EXISTS customer_order_items CASCADE,1.505456,2,1645,0
+DROP TABLE IF EXISTS goods_receipt_items CASCADE,1.446656,2,1622,0
+DROP TABLE IF EXISTS goods_receipt_items CASCADE,1.441038,2,1624,0
+DROP TABLE IF EXISTS inventory_movements CASCADE,1.404185,2,1799,0
+"DO $$
+BEGIN
+  CREATE TYPE shipment_status AS ENUM (
+    'created',
+    'dispatched',
+    'delivered',
+    'cancelled'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$",1.372255,1,153,0
+DROP TABLE IF EXISTS customer_order_items CASCADE,1.3692324999999999,2,1645,0
+"DO $$
+BEGIN
+  CREATE TYPE shipment_status AS ENUM (
+    'created',
+    'dispatched',
+    'delivered',
+    'cancelled'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$",1.3002073333333333,3,420,0
+"DO $$
+BEGIN
+  CREATE TYPE shipment_status AS ENUM (
+    'created',
+    'dispatched',
+    'delivered',
+    'cancelled'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$",1.2936463333333335,3,419,0
+"DO $$
+BEGIN
+  CREATE TYPE customer_order_status AS ENUM (
+    'new',
+    'confirmed',
+    'picking',
+    'shipped',
+    'delivered',
+    'cancelled'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$",1.291846,3,451,0
+"DO $$
+BEGIN
+  CREATE TYPE customer_order_status AS ENUM (
+    'new',
+    'confirmed',
+    'picking',
+    'shipped',
+    'delivered',
+    'cancelled'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$",1.2686656666666667,3,453,0
+DROP TABLE IF EXISTS products CASCADE,1.256377,2,1822,0
+"DO $$
+BEGIN
+  CREATE TYPE supplier_order_status AS ENUM (
+    'draft',
+    'placed',
+    'partially_received',
+    'received',
+    'cancelled'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$",1.251697,1,155,0
+"DO $$
+BEGIN
+  CREATE TYPE supplier_order_status AS ENUM (
+    'draft',
+    'placed',
+    'partially_received',
+    'received',
+    'cancelled'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$",1.2360663333333335,3,454,0
+DROP TABLE IF EXISTS supplier_orders CASCADE,1.2342755,2,1094,0
+"DROP TABLE pg_temp_22.pg_temp_17945_2, pg_temp_22.pg_temp_17945",1.2287745,2,821,0
+"CREATE INDEX IF NOT EXISTS brin_customer_order_audit_notes_created_at
+  ON customer_order_audit_notes USING BRIN (created_at)",1.20632,1,211,0
+"SELECT
+                tc.constraint_name,
+                tc.table_name,
+                tc.constraint_type,
+                cc.check_clause
+            FROM information_schema.table_constraints tc
+            LEFT JOIN information_schema.check_constraints cc
+                   ON tc.constraint_name = cc.constraint_name
+            WHERE tc.table_schema = $1",1.1891499726027395,73,14961,0
+"SELECT
+                tc.constraint_name,
+                tc.table_name,
+                tc.constraint_type,
+                cc.check_clause
+            FROM information_schema.table_constraints tc
+            LEFT JOIN information_schema.check_constraints cc
+                   ON tc.constraint_name = cc.constraint_name
+            WHERE tc.table_schema = $1",1.1834954411764707,68,14010,0
+"DO $$
+DECLARE
+  exporter_user text := 'postgres_exporter';
+BEGIN
+  EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM %I', current_database(), exporter_user);
+END $$",1.1800220000000001,2,111,0
+"CREATE INDEX IF NOT EXISTS brin_customer_order_audit_notes_created_at
+  ON customer_order_audit_notes USING BRIN (created_at)",1.1617493333333333,3,630,0
+DROP TABLE IF EXISTS brands CASCADE,1.15477,2,1103,0
+DROP TABLE IF EXISTS brands CASCADE,1.142643,2,1107,0
+DROP TABLE IF EXISTS customer_order_audit_notes CASCADE,1.1236535,2,1432,0
+DROP TABLE IF EXISTS customer_order_audit_notes CASCADE,1.077366,2,1427,0
+DROP TABLE IF EXISTS goods_receipts CASCADE,1.002761,2,1427,0
+"SELECT grantee, table_name, privilege_type, is_grantable
+		    FROM information_schema.role_table_grants
+		    WHERE table_schema = $1
+		    ORDER BY grantee, table_name, privilege_type, is_grantable",1.001615178082191,73,1931,0
+"SELECT grantee, table_name, privilege_type, is_grantable
+		    FROM information_schema.role_table_grants
+		    WHERE table_schema = $1
+		    ORDER BY grantee, table_name, privilege_type, is_grantable",0.998663955882353,68,4014,0
+DROP TABLE IF EXISTS shipment_items CASCADE,0.9931099999999999,2,1280,0
+DROP TABLE IF EXISTS shipments CASCADE,0.9825345,2,1422,0
+"CREATE INDEX IF NOT EXISTS brin_customer_order_audit_notes_created_at
+  ON customer_order_audit_notes USING BRIN (created_at)",0.9480256666666665,3,627,1
+DROP TABLE IF EXISTS goods_receipts CASCADE,0.93907,2,1422,0
+DROP TABLE IF EXISTS supplier_order_items CASCADE,0.8603525000000001,2,1245,0
+"DO $$
+DECLARE
+  exporter_user text := 'postgres_exporter';
+BEGIN
+  EXECUTE format('REVOKE CONNECT ON DATABASE %I FROM %I', current_database(), exporter_user);
+END $$",0.856319,2,111,0
+DROP TABLE IF EXISTS shipment_items CASCADE,0.848923,2,1286,0
+DROP TABLE IF EXISTS customer_orders CASCADE,0.83357,2,1019,0
+GRANT pg_monitor TO postgres_exporter,0.8131839999999999,3,45,0
+DROP TABLE IF EXISTS customer_orders CASCADE,0.8073485,2,1019,0
+DROP TABLE IF EXISTS shipments CASCADE,0.8022985,2,1422,0
+"GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public TO warehouse_user",0.787884,2,558,0
+DROP INDEX IF EXISTS idx_inventory_movements_moved_warehouse_product,0.785901,2,472,0
+"ALTER TABLE customer_orders
+  ADD COLUMN IF NOT EXISTS total_amount NUMERIC(14,2),
+  ADD COLUMN IF NOT EXISTS items_count INTEGER,
+  ADD COLUMN IF NOT EXISTS last_status_changed_at TIMESTAMPTZ",0.720432,1,120,0
+select setting from pg_settings where name = $1,0.7202082933333332,75,0,0
+DROP TABLE IF EXISTS supplier_order_items CASCADE,0.7185545,2,1249,0
+"-- Register a view on the function for ease of use.
+CREATE VIEW pg_stat_statements AS
+  SELECT * FROM pg_stat_statements(true)",0.7048483333333333,12,2960,0
+select setting from pg_settings where name = $1,0.7008306714285715,70,0,0
+"CREATE TYPE customer_order_status AS ENUM (
+    'new',
+    'confirmed',
+    'picking',
+    'shipped',
+    'delivered',
+    'cancelled'
+  )",0.688753,1,143,0
+"-- Register a view on the function for ease of use.
+CREATE VIEW pg_stat_statements AS
+  SELECT * FROM pg_stat_statements(true)",0.6849338333333335,12,2945,2
+"ALTER TABLE customer_orders
+  ADD COLUMN IF NOT EXISTS total_amount NUMERIC(14,2),
+  ADD COLUMN IF NOT EXISTS items_count INTEGER,
+  ADD COLUMN IF NOT EXISTS last_status_changed_at TIMESTAMPTZ",0.6821083333333334,3,367,0
+select setting from pg_settings where name = $1,0.6792567931034484,29,0,0
+DROP TABLE IF EXISTS warehouses CASCADE,0.679091,2,794,0
+DROP TABLE IF EXISTS order_status_events CASCADE,0.64719,2,1119,0
+DROP MATERIALIZED VIEW IF EXISTS mv_revenue_by_day_category,0.6432846,5,1069,0
+DROP TABLE IF EXISTS employees CASCADE,0.6379885,2,810,0
+DROP INDEX IF EXISTS idx_order_status_events_order_created_at,0.6331385,2,442,0
+DROP TABLE IF EXISTS product_categories CASCADE,0.6118875,2,793,0
+ALTER TABLE customer_orders DROP COLUMN IF EXISTS delivery_priority,0.607155,2,390,0
+DROP INDEX IF EXISTS idx_order_status_events_order_created_at,0.6055955,2,437,0
+DROP TABLE IF EXISTS suppliers CASCADE,0.5921860000000001,2,792,0
+DROP TABLE IF EXISTS order_status_events CASCADE,0.590546,2,1119,0
+DROP TABLE IF EXISTS supplier_orders CASCADE,0.588246,2,1097,0
+DROP EXTENSION IF EXISTS pg_stat_statements,0.588186,2,853,0
+"-- Register a view on the function for ease of use.
+CREATE VIEW pg_stat_statements AS
+  SELECT * FROM pg_stat_statements(true)",0.5708734999999999,4,981,0
+DROP TABLE IF EXISTS product_categories CASCADE,0.5623454999999999,2,794,0
+"CREATE TYPE supplier_order_status AS ENUM (
+    'draft',
+    'placed',
+    'partially_received',
+    'received',
+    'cancelled'
+  )",0.555243,1,149,0
+DROP TYPE IF EXISTS inventory_movement_type,0.5504830000000001,2,103,0
+"ALTER TABLE customer_orders
+  ADD COLUMN IF NOT EXISTS total_amount NUMERIC(14,2),
+  ADD COLUMN IF NOT EXISTS items_count INTEGER,
+  ADD COLUMN IF NOT EXISTS last_status_changed_at TIMESTAMPTZ",0.548659,3,367,0
+ALTER TABLE customer_orders DROP COLUMN IF EXISTS last_status_changed_at,0.5454125000000001,2,391,0
+DROP TABLE IF EXISTS customers CASCADE,0.5413825,2,790,0
+DROP TABLE IF EXISTS warehouses CASCADE,0.535594,2,798,0
+"ALTER TABLE customer_orders
+  ADD COLUMN IF NOT EXISTS delivery_window_start TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS delivery_window_end TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS delivery_priority SMALLINT",0.505707,3,352,0
+DROP TABLE IF EXISTS suppliers CASCADE,0.504591,2,797,0
+"SELECT routine_name, routine_type, data_type
+            FROM information_schema.routines
+            WHERE specific_schema = $1
+            ORDER BY routine_name",0.49864894117647046,68,7413,0
+"CREATE TYPE supplier_order_status AS ENUM (
+    'draft',
+    'placed',
+    'partially_received',
+    'received',
+    'cancelled'
+  )",0.49625433333333335,3,436,0
+"SELECT routine_name, routine_type, data_type
+            FROM information_schema.routines
+            WHERE specific_schema = $1
+            ORDER BY routine_name",0.4880081780821917,73,7999,2
+DROP TABLE IF EXISTS employees CASCADE,0.48544,2,796,0
+"CREATE TYPE shipment_status AS ENUM (
+    'created',
+    'dispatched',
+    'delivered',
+    'cancelled'
+  )",0.4842176666666667,3,402,0
+"ALTER TABLE customer_orders
+  ADD COLUMN IF NOT EXISTS delivery_window_start TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS delivery_window_end TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS delivery_priority SMALLINT",0.4825296666666667,3,350,0
+"SELECT indexname, indexdef
+            FROM pg_indexes
+            WHERE schemaname = $1
+            ORDER BY indexname",0.47530879452054803,73,43117,0
+DROP TABLE IF EXISTS customers CASCADE,0.46888850000000004,2,790,0
+DROP INDEX IF EXISTS idx_customer_order_audit_notes_order_created,0.4688295,2,444,0
+DROP MATERIALIZED VIEW IF EXISTS mv_revenue_by_day_category,0.4649286,5,1069,0
+ANALYZE pg_temp_22.pg_temp_17945,0.4645275,2,423,0
+"CREATE TYPE shipment_status AS ENUM (
+    'created',
+    'dispatched',
+    'delivered',
+    'cancelled'
+  )",0.462219,1,147,0
+DROP INDEX IF EXISTS brin_customer_order_audit_notes_created_at,0.44847800000000004,2,426,0
+DROP INDEX IF EXISTS brin_customer_order_audit_notes_created_at,0.4452855,2,426,0
+"CREATE TYPE customer_order_status AS ENUM (
+    'new',
+    'confirmed',
+    'picking',
+    'shipped',
+    'delivered',
+    'cancelled'
+  )",0.44055999999999995,3,433,0
+"SELECT indexname, indexdef
+            FROM pg_indexes
+            WHERE schemaname = $1
+            ORDER BY indexname",0.4306016029411763,68,38690,0
+"CREATE TYPE customer_order_status AS ENUM (
+    'new',
+    'confirmed',
+    'picking',
+    'shipped',
+    'delivered',
+    'cancelled'
+  )",0.4283093333333333,3,435,0
+DROP EXTENSION IF EXISTS pg_stat_statements,0.4199305,2,848,0
+ALTER TABLE customer_orders DROP COLUMN IF EXISTS delivery_priority,0.4164255,2,390,0
+INSERT INTO public.mv_revenue_by_day_category SELECT (diff.newdata).* FROM pg_temp_22.pg_temp_17945_2 diff WHERE tid IS NULL,0.415924,1,604,0
+"CREATE TYPE shipment_status AS ENUM (
+    'created',
+    'dispatched',
+    'delivered',
+    'cancelled'
+  )",0.409925,3,401,0
+"GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO warehouse_user",0.3931675,2,288,0
+ALTER TABLE customer_orders DROP COLUMN IF EXISTS last_status_changed_at,0.374473,2,391,0
+DROP INDEX IF EXISTS idx_customer_order_audit_notes_order_created,0.359131,2,439,0
+"ALTER TABLE customer_orders
+  ADD COLUMN IF NOT EXISTS delivery_window_start TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS delivery_window_end TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS delivery_priority SMALLINT",0.355416,1,113,0
+"CREATE TYPE supplier_order_status AS ENUM (
+    'draft',
+    'placed',
+    'partially_received',
+    'received',
+    'cancelled'
+  )",0.3521553333333333,3,434,0
+"SELECT
+  sales_day,
+  category_name,
+  order_count,
+  revenue,
+  audit_note_count
+FROM mv_revenue_by_day_category
+WHERE sales_day >= ($1::timestamptz)::date
+  AND sales_day < ($2::timestamptz)::date
+ORDER BY sales_day DESC, revenue DESC
+LIMIT $3",0.34980198412698404,63,411,0
+"SELECT pg_catalog.pg_postmaster_start_time(), CASE WHEN pg_catalog.pg_is_in_recovery() THEN $1 ELSE ($2 || pg_catalog.substr(pg_catalog.pg_walfile_name(pg_catalog.pg_current_wal_lsn()), $3, $4))::bit(32)::int END, CASE WHEN pg_catalog.pg_is_in_recovery() THEN $5 ELSE pg_catalog.pg_wal_lsn_diff(pg_catalog.pg_current_wal_flush_lsn(), $6)::bigint END, pg_catalog.pg_wal_lsn_diff(pg_catalog.pg_last_wal_replay_lsn(), $7)::bigint, pg_catalog.pg_wal_lsn_diff(COALESCE(pg_catalog.pg_last_wal_receive_lsn(), $8), $9)::bigint, pg_catalog.pg_is_in_recovery() AND pg_catalog.pg_is_wal_replay_paused(), pg_catalog.pg_last_xact_replay_timestamp(), (pg_catalog.pg_stat_get_wal_receiver()).status, pg_catalog.current_setting($10), pg_catalog.array_to_json(pg_catalog.array_agg(pg_catalog.row_to_json(ri))) FROM (SELECT (SELECT rolname FROM pg_catalog.pg_authid WHERE oid = usesysid) AS usename, application_name, client_addr, w.state, sync_state, sync_priority FROM pg_catalog.pg_stat_get_wal_senders() w, pg_catalog.pg_stat_get_activity(pid)) AS ri",0.3427075152887882,883,877,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.4.sql */
+
+-- complain if script is sourced in psql, rather than via CREATE EXTENSION
+
+
+-- Register functions.
+CREATE FUNCTION pg_stat_statements_reset()
+RETURNS void
+AS '$libdir/pg_stat_statements'
+LANGUAGE C PARALLEL SAFE",0.3257673333333333,3,147,0
+SELECT newdata.*::pg_temp_22.pg_temp_17945 FROM pg_temp_22.pg_temp_17945 newdata WHERE newdata.* IS NOT NULL AND EXISTS (SELECT $1 FROM pg_temp_22.pg_temp_17945 newdata2 WHERE newdata2.* IS NOT NULL AND newdata2.* OPERATOR(pg_catalog.*=) newdata.* AND newdata2.ctid OPERATOR(pg_catalog.<>) newdata.ctid),0.31861900000000004,1,3,0
+SELECT newdata.*::pg_temp_22.pg_temp_17945 FROM pg_temp_22.pg_temp_17945 newdata WHERE newdata.* IS NOT NULL AND EXISTS (SELECT $1 FROM pg_temp_22.pg_temp_17945 newdata2 WHERE newdata2.* IS NOT NULL AND newdata2.* OPERATOR(pg_catalog.*=) newdata.* AND newdata2.ctid OPERATOR(pg_catalog.<>) newdata.ctid),0.308018,1,3,0
+"INSERT INTO pg_temp_22.pg_temp_17945_2 SELECT mv.ctid AS tid, newdata.*::pg_temp_22.pg_temp_17945 AS newdata FROM public.mv_revenue_by_day_category mv FULL JOIN pg_temp_22.pg_temp_17945 newdata ON (newdata.sales_day OPERATOR(pg_catalog.=) mv.sales_day AND newdata.category_name OPERATOR(pg_catalog.=) mv.category_name AND newdata.* OPERATOR(pg_catalog.*=) mv.*) WHERE newdata.* IS NULL OR mv.* IS NULL ORDER BY tid",0.300418,1,7,0
+"DO $$
+BEGIN
+  CREATE TYPE inventory_movement_type AS ENUM (
+    'receipt',
+    'shipment',
+    'write_off',
+    'adjustment'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$",0.294812,1,49,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.4.sql */
+
+-- complain if script is sourced in psql, rather than via CREATE EXTENSION
+
+
+-- Register functions.
+CREATE FUNCTION pg_stat_statements_reset()
+RETURNS void
+AS '$libdir/pg_stat_statements'
+LANGUAGE C PARALLEL SAFE",0.283712,1,49,0
+"select string_agg(word, $1) from pg_catalog.pg_get_keywords() where word <> ALL ($2::text[])",0.2830285862068965,29,0,0
+DELETE FROM public.mv_revenue_by_day_category mv WHERE ctid OPERATOR(pg_catalog.=) ANY (SELECT diff.tid FROM pg_temp_22.pg_temp_17945_2 diff WHERE diff.tid IS NOT NULL AND diff.newdata IS NULL),0.281117,1,202,0
+"select string_agg(word, $1) from pg_catalog.pg_get_keywords() where word <> ALL ($2::text[])",0.2758152714285714,70,0,0
+"select string_agg(word, $1) from pg_catalog.pg_get_keywords() where word <> ALL ($2::text[])",0.27521821333333346,75,0,0
+"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLES TO warehouse_user",0.274158,2,92,0
+"WITH params AS (
+  SELECT GREATEST($1, $2::int) AS sc
+)
+INSERT INTO product_categories (category_name)
+SELECT c.category_name
+FROM (VALUES
+  ($3),
+  ($4),
+  ($5),
+  ($6),
+  ($7),
+  ($8),
+  ($9),
+  ($10)
+) AS c(category_name)
+ON CONFLICT (category_name) DO NOTHING",0.266805,1,78,0
+"GRANT CONNECT, TEMP ON DATABASE warehouse TO warehouse_user",0.2614565,2,38,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.4.sql */
+
+-- complain if script is sourced in psql, rather than via CREATE EXTENSION
+
+
+-- Register functions.
+CREATE FUNCTION pg_stat_statements_reset()
+RETURNS void
+AS '$libdir/pg_stat_statements'
+LANGUAGE C PARALLEL SAFE",0.2609163333333333,3,144,3
+ALTER TABLE pg_temp_22.pg_temp_17945_2 ADD COLUMN newdata pg_temp_22.pg_temp_17945,0.254865,2,369,0
+"CREATE VIEW pg_stat_statements_info AS
+  SELECT * FROM pg_stat_statements_info()",0.23912333333333333,3,304,0
+"SELECT setval(
+  pg_get_serial_sequence($1, $2),
+  GREATEST((SELECT COALESCE(MAX(shipment_item_id), $3) FROM shipment_items), $4),
+  $5
+)",0.21442,1,28,0
+DROP INDEX IF EXISTS idx_customer_orders_status_created_at,0.210664,2,132,0
+DROP TYPE IF EXISTS customer_order_status,0.2072125,2,109,0
+GRANT USAGE ON SCHEMA public TO warehouse_user,0.20420700000000003,2,71,0
+"DO $$
+BEGIN
+  CREATE TYPE inventory_movement_type AS ENUM (
+    'receipt',
+    'shipment',
+    'write_off',
+    'adjustment'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$",0.20418999999999998,3,153,0
+"DO $$
+BEGIN
+  CREATE TYPE inventory_movement_type AS ENUM (
+    'receipt',
+    'shipment',
+    'write_off',
+    'adjustment'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$",0.203479,3,153,0
+GRANT pg_monitor TO postgres_exporter,0.19894866666666666,3,75,13
+DROP TYPE IF EXISTS supplier_order_status,0.19806200000000002,2,104,0
+DROP TYPE IF EXISTS customer_order_status,0.1910285,2,109,0
+"INSERT INTO public.databasechangeloglock (ID, LOCKED) VALUES ($1, $2)",0.18699600000000002,1,2,0
+REVOKE CONNECT ON DATABASE warehouse_test FROM postgres_exporter,0.1852115,2,75,0
+GRANT CONNECT ON DATABASE warehouse_test TO postgres_exporter,0.17627733333333334,3,162,0
+"CREATE VIEW pg_stat_statements_info AS
+  SELECT * FROM pg_stat_statements_info()",0.17577733333333334,3,304,0
+"/* Then we can drop them */
+DROP VIEW pg_stat_statements",0.17333277777777778,9,1192,1
+"INSERT INTO pg_temp_22.pg_temp_17945_2 SELECT mv.ctid AS tid, newdata.*::pg_temp_22.pg_temp_17945 AS newdata FROM public.mv_revenue_by_day_category mv FULL JOIN pg_temp_22.pg_temp_17945 newdata ON (newdata.sales_day OPERATOR(pg_catalog.=) mv.sales_day AND newdata.category_name OPERATOR(pg_catalog.=) mv.category_name AND newdata.* OPERATOR(pg_catalog.*=) mv.*) WHERE newdata.* IS NULL OR mv.* IS NULL ORDER BY tid",0.17211,1,5,0
+CREATE TEMP TABLE pg_temp_22.pg_temp_17945_2 (tid pg_catalog.tid),0.17141050000000002,2,182,0
+"SELECT setval(
+  pg_get_serial_sequence($1, $2),
+  GREATEST((SELECT COALESCE(MAX(shipment_id), $3) FROM shipments), $4),
+  $5
+)",0.171216,1,56,0
+DROP MATERIALIZED VIEW IF EXISTS mv_revenue_by_day_category,0.169403,1,5,0
+"SELECT setval(
+  pg_get_serial_sequence($1, $2),
+  GREATEST((SELECT COALESCE(MAX(supplier_order_id), $3) FROM supplier_orders), $4),
+  $5
+)",0.16820600000000002,1,60,0
+"CREATE TYPE inventory_movement_type AS ENUM (
+    'receipt',
+    'shipment',
+    'write_off',
+    'adjustment'
+  )",0.165807,1,49,0
+GRANT pg_monitor TO postgres_exporter,0.165107,1,15,0
+"SELECT setval(
+  pg_get_serial_sequence($1, $2),
+  GREATEST((SELECT COALESCE(MAX(goods_receipt_item_id), $3) FROM goods_receipt_items), $4),
+  $5
+)",0.165006,1,26,0
+ALTER TABLE customer_orders DROP COLUMN IF EXISTS delivery_window_start,0.162765,2,80,0
+"INSERT INTO public.databasechangeloglock (ID, LOCKED) VALUES ($1, $2)",0.159306,1,2,0
+ALTER TABLE customer_orders DROP COLUMN IF EXISTS delivery_window_start,0.1541095,2,80,0
+"CREATE VIEW pg_stat_statements_info AS
+  SELECT * FROM pg_stat_statements_info()",0.153606,1,102,0
+"SELECT setval(
+  pg_get_serial_sequence($1, $2),
+  GREATEST((SELECT COALESCE(MAX(customer_order_id), $3) FROM customer_orders), $4),
+  $5
+)",0.150106,1,56,0
+ALTER TABLE customer_orders DROP COLUMN IF EXISTS total_amount,0.14960050000000003,2,82,0
+"SELECT setval(
+  pg_get_serial_sequence($1, $2),
+  GREATEST((SELECT COALESCE(MAX(inventory_movement_id), $3) FROM inventory_movements), $4),
+  $5
+)",0.143713,1,25,0
+DROP TYPE IF EXISTS shipment_status,0.1433585,2,100,0
+DROP INDEX IF EXISTS idx_inventory_movements_warehouse_moved_at,0.139109,2,114,0
+"CREATE TYPE inventory_movement_type AS ENUM (
+    'receipt',
+    'shipment',
+    'write_off',
+    'adjustment'
+  )",0.138375,3,153,0
+"SELECT
+                viewname AS table_name,
+                pg_get_viewdef(viewname::regclass, $1) AS definition
+            FROM pg_views
+            WHERE schemaname = $2",0.1369426575342466,73,1531,0
+"SELECT $2 FROM ONLY ""public"".""customers"" x WHERE ""customer_id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",0.13658270720554613,108472,442360,0
+"/* Then we can drop them */
+DROP VIEW pg_stat_statements",0.1364138888888889,9,1195,0
+"CREATE TYPE inventory_movement_type AS ENUM (
+    'receipt',
+    'shipment',
+    'write_off',
+    'adjustment'
+  )",0.12948099999999998,3,153,0
+GRANT CONNECT ON DATABASE warehouse_test TO postgres_exporter,0.129275,3,154,0
+"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO warehouse_user",0.1291545,2,20,0
+"SELECT
+                viewname AS table_name,
+                pg_get_viewdef(viewname::regclass, $1) AS definition
+            FROM pg_views
+            WHERE schemaname = $2",0.12713338235294114,68,1424,0
+DROP TYPE IF EXISTS inventory_movement_type,0.12616149999999998,2,104,0
+DROP TYPE IF EXISTS supplier_order_status,0.1242095,2,104,0
+"INSERT INTO public.databasechangeloglock (ID, LOCKED) VALUES ($1, $2)",0.123308,1,2,0
+"SELECT setval(
+  pg_get_serial_sequence($1, $2),
+  GREATEST((SELECT COALESCE(MAX(supplier_order_item_id), $3) FROM supplier_order_items), $4),
+  $5
+)",0.12220500000000001,1,28,0
+"SELECT $2 FROM ONLY ""public"".""customer_orders"" x WHERE ""customer_order_id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",0.12220286059494356,564793,2268030,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.7--1.8.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+/* First we have to remove them from the extension */
+ALTER EXTENSION pg_stat_statements DROP VIEW pg_stat_statements",0.12129644444444446,9,1237,0
+"/* Now redefine */
+CREATE FUNCTION pg_stat_statements(IN showtext boolean,
+    OUT userid oid,
+    OUT dbid oid,
+    OUT toplevel bool,
+    OUT queryid bigint,
+    OUT query text,
+    OUT plans int8,
+    OUT total_plan_time float8,
+    OUT min_plan_time float8,
+    OUT max_plan_time float8,
+    OUT mean_plan_time float8,
+    OUT stddev_plan_time float8,
+    OUT calls int8,
+    OUT total_exec_time float8,
+    OUT min_exec_time float8,
+    OUT max_exec_time float8,
+    OUT mean_exec_time float8,
+    OUT stddev_exec_time float8,
+    OUT rows int8,
+    OUT shared_blks_hit int8,
+    OUT shared_blks_read int8,
+    OUT shared_blks_dirtied int8,
+    OUT shared_blks_written int8,
+    OUT local_blks_hit int8,
+    OUT local_blks_read int8,
+    OUT local_blks_dirtied int8,
+    OUT local_blks_written int8,
+    OUT temp_blks_read int8,
+    OUT temp_blks_written int8,
+    OUT blk_read_time float8,
+    OUT blk_write_time float8,
+    OUT temp_blk_read_time float8,
+    OUT temp_blk_write_time float8,
+    OUT wal_records int8,
+    OUT wal_fpi int8,
+    OUT wal_bytes numeric,
+    OUT jit_functions int8,
+    OUT jit_generation_time float8,
+    OUT jit_inlining_count int8,
+    OUT jit_inlining_time float8,
+    OUT jit_optimization_count int8,
+    OUT jit_optimization_time float8,
+    OUT jit_emission_count int8,
+    OUT jit_emission_time float8
+)
+RETURNS SETOF record
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_1_10'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.12014066666666667,3,85,0
+GRANT CONNECT ON DATABASE warehouse TO postgres_exporter,0.119004,1,55,0
+ALTER TABLE customer_orders DROP COLUMN IF EXISTS total_amount,0.11790700000000001,2,82,0
+"/* Then we can drop them */
+DROP VIEW pg_stat_statements",0.11680466666666667,3,399,0
+REVOKE CONNECT ON DATABASE warehouse_test FROM postgres_exporter,0.1142525,2,75,0
+ALTER TABLE customer_orders DROP COLUMN IF EXISTS delivery_window_end,0.11421,2,80,0
+"SELECT sequence_name, data_type, start_value, minimum_value, maximum_value, increment, cycle_option
+            FROM information_schema.sequences
+            WHERE sequence_schema = $1
+            ORDER BY sequence_name",0.11287821917808219,73,6132,0
+"/* Then we can drop them */
+DROP FUNCTION pg_stat_statements_reset()",0.112507,3,206,1
+"INSERT INTO seed_history (seed_version, seed_count, app_env, applied_at)
+        VALUES ($1, $2, $3, now())
+        ON CONFLICT (seed_version)
+        DO UPDATE SET seed_count = EXCLUDED.seed_count, app_env = EXCLUDED.app_env, applied_at = EXCLUDED.applied_at",0.11184359999999999,5,65,0
+"SELECT setval(
+  pg_get_serial_sequence($1, $2),
+  GREATEST((SELECT COALESCE(MAX(customer_order_item_id), $3) FROM customer_order_items), $4),
+  $5
+)",0.110804,1,25,0
+"SELECT * FROM (SELECT n.nspname,c.relname,a.attname,a.atttypid,a.attnotnull OR (t.typtype = $1 AND t.typnotnull) AS attnotnull,a.atttypmod,a.attlen,t.typtypmod,row_number() OVER (PARTITION BY a.attrelid ORDER BY a.attnum) AS attnum, nullif(a.attidentity, $2) as attidentity,nullif(a.attgenerated, $3) as attgenerated,pg_catalog.pg_get_expr(def.adbin, def.adrelid) AS adsrc,dsc.description,t.typbasetype,t.typtype  FROM pg_catalog.pg_namespace n  JOIN pg_catalog.pg_class c ON (c.relnamespace = n.oid)  JOIN pg_catalog.pg_attribute a ON (a.attrelid=c.oid)  JOIN pg_catalog.pg_type t ON (a.atttypid = t.oid)  LEFT JOIN pg_catalog.pg_attrdef def ON (a.attrelid=def.adrelid AND a.attnum = def.adnum)  LEFT JOIN pg_catalog.pg_description dsc ON (c.oid=dsc.objoid AND a.attnum = dsc.objsubid)  LEFT JOIN pg_catalog.pg_class dc ON (dc.oid=dsc.classoid AND dc.relname=$4)  LEFT JOIN pg_catalog.pg_namespace dn ON (dc.relnamespace=dn.oid AND dn.nspname=$5)  WHERE c.relkind in ($6,$7,$8,$9,$10) and a.attnum > $11 AND NOT a.attisdropped  AND n.nspname LIKE $12 AND c.relname LIKE $13) c WHERE $14  AND attname LIKE $15 ORDER BY nspname,c.relname,attnum",0.11029157142857143,28,2136,0
+"SELECT * FROM (SELECT n.nspname,c.relname,a.attname,a.atttypid,a.attnotnull OR (t.typtype = $1 AND t.typnotnull) AS attnotnull,a.atttypmod,a.attlen,t.typtypmod,row_number() OVER (PARTITION BY a.attrelid ORDER BY a.attnum) AS attnum, nullif(a.attidentity, $2) as attidentity,nullif(a.attgenerated, $3) as attgenerated,pg_catalog.pg_get_expr(def.adbin, def.adrelid) AS adsrc,dsc.description,t.typbasetype,t.typtype  FROM pg_catalog.pg_namespace n  JOIN pg_catalog.pg_class c ON (c.relnamespace = n.oid)  JOIN pg_catalog.pg_attribute a ON (a.attrelid=c.oid)  JOIN pg_catalog.pg_type t ON (a.atttypid = t.oid)  LEFT JOIN pg_catalog.pg_attrdef def ON (a.attrelid=def.adrelid AND a.attnum = def.adnum)  LEFT JOIN pg_catalog.pg_description dsc ON (c.oid=dsc.objoid AND a.attnum = dsc.objsubid)  LEFT JOIN pg_catalog.pg_class dc ON (dc.oid=dsc.classoid AND dc.relname=$4)  LEFT JOIN pg_catalog.pg_namespace dn ON (dc.relnamespace=dn.oid AND dn.nspname=$5)  WHERE c.relkind in ($6,$7,$8,$9,$10) and a.attnum > $11 AND NOT a.attisdropped  AND n.nspname LIKE $12 AND c.relname LIKE $13) c WHERE $14  AND attname LIKE $15 ORDER BY nspname,c.relname,attnum",0.1091444594594595,74,5241,0
+"SELECT * FROM (SELECT n.nspname,c.relname,a.attname,a.atttypid,a.attnotnull OR (t.typtype = $1 AND t.typnotnull) AS attnotnull,a.atttypmod,a.attlen,t.typtypmod,row_number() OVER (PARTITION BY a.attrelid ORDER BY a.attnum) AS attnum, nullif(a.attidentity, $2) as attidentity,nullif(a.attgenerated, $3) as attgenerated,pg_catalog.pg_get_expr(def.adbin, def.adrelid) AS adsrc,dsc.description,t.typbasetype,t.typtype  FROM pg_catalog.pg_namespace n  JOIN pg_catalog.pg_class c ON (c.relnamespace = n.oid)  JOIN pg_catalog.pg_attribute a ON (a.attrelid=c.oid)  JOIN pg_catalog.pg_type t ON (a.atttypid = t.oid)  LEFT JOIN pg_catalog.pg_attrdef def ON (a.attrelid=def.adrelid AND a.attnum = def.adnum)  LEFT JOIN pg_catalog.pg_description dsc ON (c.oid=dsc.objoid AND a.attnum = dsc.objsubid)  LEFT JOIN pg_catalog.pg_class dc ON (dc.oid=dsc.classoid AND dc.relname=$4)  LEFT JOIN pg_catalog.pg_namespace dn ON (dc.relnamespace=dn.oid AND dn.nspname=$5)  WHERE c.relkind in ($6,$7,$8,$9,$10) and a.attnum > $11 AND NOT a.attisdropped  AND n.nspname LIKE $12 AND c.relname LIKE $13) c WHERE $14  AND attname LIKE $15 ORDER BY nspname,c.relname,attnum",0.10835308695652171,69,5293,0
+ALTER TABLE customer_orders DROP COLUMN IF EXISTS delivery_window_end,0.1073065,2,80,0
+DROP INDEX IF EXISTS idx_order_status_events_created_at,0.10675799999999999,2,106,0
+DROP INDEX IF EXISTS idx_order_status_events_created_at,0.105306,2,106,0
+"SELECT setval(
+  pg_get_serial_sequence($1, $2),
+  GREATEST((SELECT COALESCE(MAX(goods_receipt_id), $3) FROM goods_receipts), $4),
+  $5
+)",0.105304,1,25,0
+"CREATE FUNCTION pg_stat_statements(IN showtext boolean,
+    OUT userid oid,
+    OUT dbid oid,
+    OUT queryid bigint,
+    OUT query text,
+    OUT calls int8,
+    OUT total_time float8,
+    OUT min_time float8,
+    OUT max_time float8,
+    OUT mean_time float8,
+    OUT stddev_time float8,
+    OUT rows int8,
+    OUT shared_blks_hit int8,
+    OUT shared_blks_read int8,
+    OUT shared_blks_dirtied int8,
+    OUT shared_blks_written int8,
+    OUT local_blks_hit int8,
+    OUT local_blks_read int8,
+    OUT local_blks_dirtied int8,
+    OUT local_blks_written int8,
+    OUT temp_blks_read int8,
+    OUT temp_blks_written int8,
+    OUT blk_read_time float8,
+    OUT blk_write_time float8
+)
+RETURNS SETOF record
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_1_3'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.10450933333333333,3,159,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.7--1.8.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+/* First we have to remove them from the extension */
+ALTER EXTENSION pg_stat_statements DROP VIEW pg_stat_statements",0.10418844444444444,9,1237,0
+"/* Then we can drop them */
+DROP FUNCTION pg_stat_statements_reset()",0.10157600000000001,3,207,0
+DROP TYPE IF EXISTS shipment_status,0.10130800000000001,2,100,0
+"SELECT tablename
+            FROM pg_catalog.pg_tables
+            WHERE schemaname = $1
+            ORDER BY tablename",0.10023091176470587,68,1077,0
+"SELECT CASE WHEN pg_catalog.pg_is_in_recovery() THEN $1 ELSE ($2 || pg_catalog.substr(pg_catalog.pg_walfile_name(pg_catalog.pg_current_wal_lsn()), $3, $4))::bit(32)::int END, CASE WHEN pg_catalog.pg_is_in_recovery() THEN $5 ELSE pg_catalog.pg_wal_lsn_diff(pg_catalog.pg_current_wal_flush_lsn(), $6)::bigint END, pg_catalog.pg_wal_lsn_diff(pg_catalog.pg_last_wal_replay_lsn(), $7)::bigint, pg_catalog.pg_wal_lsn_diff(COALESCE(pg_catalog.pg_last_wal_receive_lsn(), $8), $9)::bigint, pg_catalog.pg_is_in_recovery() AND pg_catalog.pg_is_wal_replay_paused(), $10, CASE WHEN latest_end_lsn IS NULL THEN $11 ELSE received_tli END, slot_name, conninfo, status, pg_catalog.current_setting($12), (SELECT pg_catalog.json_agg(s.*) FROM (SELECT slot_name, slot_type as type, datoid::bigint, plugin, catalog_xmin, pg_catalog.pg_wal_lsn_diff(confirmed_flush_lsn, $13)::bigint AS confirmed_flush_lsn, pg_catalog.pg_wal_lsn_diff(restart_lsn, $14)::bigint AS restart_lsn, xmin FROM pg_catalog.pg_get_replication_slots()) AS s), $15, $16, $17 FROM pg_catalog.pg_stat_get_wal_receiver()",0.10006403007518799,133,0,0
+"/* Now redefine */
+CREATE FUNCTION pg_stat_statements_reset(IN userid Oid DEFAULT 0,
+	IN dbid Oid DEFAULT 0,
+	IN queryid bigint DEFAULT 0
+)
+RETURNS void
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_reset_1_7'
+LANGUAGE C STRICT PARALLEL SAFE",0.097573,3,94,0
+DROP INDEX IF EXISTS idx_customer_orders_status_created_at,0.097306,2,132,0
+"SELECT tablename
+            FROM pg_catalog.pg_tables
+            WHERE schemaname = $1
+            ORDER BY tablename",0.09722654794520551,73,1155,0
+"SELECT sequence_name, data_type, start_value, minimum_value, maximum_value, increment, cycle_option
+            FROM information_schema.sequences
+            WHERE sequence_schema = $1
+            ORDER BY sequence_name",0.09679326470588236,68,4806,0
+"/* Now redefine */
+CREATE FUNCTION pg_stat_statements_reset(IN userid Oid DEFAULT 0,
+	IN dbid Oid DEFAULT 0,
+	IN queryid bigint DEFAULT 0
+)
+RETURNS void
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_reset_1_7'
+LANGUAGE C STRICT PARALLEL SAFE",0.09480833333333333,3,94,0
+DROP INDEX IF EXISTS idx_customer_order_items_order_id,0.09445599999999998,2,108,0
+DROP INDEX IF EXISTS idx_customer_orders_created_at,0.09310550000000001,2,112,0
+"CREATE FUNCTION pg_stat_statements(IN showtext boolean,
+    OUT userid oid,
+    OUT dbid oid,
+    OUT queryid bigint,
+    OUT query text,
+    OUT calls int8,
+    OUT total_time float8,
+    OUT min_time float8,
+    OUT max_time float8,
+    OUT mean_time float8,
+    OUT stddev_time float8,
+    OUT rows int8,
+    OUT shared_blks_hit int8,
+    OUT shared_blks_read int8,
+    OUT shared_blks_dirtied int8,
+    OUT shared_blks_written int8,
+    OUT local_blks_hit int8,
+    OUT local_blks_read int8,
+    OUT local_blks_dirtied int8,
+    OUT local_blks_written int8,
+    OUT temp_blks_read int8,
+    OUT temp_blks_written int8,
+    OUT blk_read_time float8,
+    OUT blk_write_time float8
+)
+RETURNS SETOF record
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_1_3'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.09020533333333333,3,161,0
+DROP INDEX IF EXISTS idx_inventory_movements_moved_at,0.08930550000000001,2,104,0
+ALTER TABLE customer_orders DROP COLUMN IF EXISTS items_count,0.089255,2,80,0
+GRANT SELECT ON pg_stat_statements TO PUBLIC,0.08624691666666667,12,334,2
+DROP INDEX IF EXISTS idx_inventory_movements_warehouse_moved_at,0.084006,2,114,0
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO warehouse_user,0.08275249999999999,2,16,0
+GRANT SELECT ON pg_stat_statements TO PUBLIC,0.08218258333333334,12,338,0
+DROP INDEX IF EXISTS idx_customer_orders_created_at,0.07975550000000001,2,112,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.8--1.9.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+--- Define pg_stat_statements_info
+CREATE FUNCTION pg_stat_statements_info(
+    OUT dealloc bigint,
+    OUT stats_reset timestamp with time zone
+)
+RETURNS record
+AS '$libdir/pg_stat_statements'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.07850766666666667,3,88,0
+DROP INDEX IF EXISTS idx_customer_order_items_product_id,0.077706,2,108,0
+"CREATE FUNCTION pg_stat_statements(IN showtext boolean,
+    OUT userid oid,
+    OUT dbid oid,
+    OUT queryid bigint,
+    OUT query text,
+    OUT calls int8,
+    OUT total_time float8,
+    OUT min_time float8,
+    OUT max_time float8,
+    OUT mean_time float8,
+    OUT stddev_time float8,
+    OUT rows int8,
+    OUT shared_blks_hit int8,
+    OUT shared_blks_read int8,
+    OUT shared_blks_dirtied int8,
+    OUT shared_blks_written int8,
+    OUT local_blks_hit int8,
+    OUT local_blks_read int8,
+    OUT local_blks_dirtied int8,
+    OUT local_blks_written int8,
+    OUT temp_blks_read int8,
+    OUT temp_blks_written int8,
+    OUT blk_read_time float8,
+    OUT blk_write_time float8
+)
+RETURNS SETOF record
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_1_3'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.077703,1,52,0
+DROP INDEX IF EXISTS idx_inventory_movements_moved_at,0.077356,2,104,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.7--1.8.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+/* First we have to remove them from the extension */
+ALTER EXTENSION pg_stat_statements DROP VIEW pg_stat_statements",0.07616966666666668,3,412,0
+"/* Now redefine */
+CREATE FUNCTION pg_stat_statements(IN showtext boolean,
+    OUT userid oid,
+    OUT dbid oid,
+    OUT toplevel bool,
+    OUT queryid bigint,
+    OUT query text,
+    OUT plans int8,
+    OUT total_plan_time float8,
+    OUT min_plan_time float8,
+    OUT max_plan_time float8,
+    OUT mean_plan_time float8,
+    OUT stddev_plan_time float8,
+    OUT calls int8,
+    OUT total_exec_time float8,
+    OUT min_exec_time float8,
+    OUT max_exec_time float8,
+    OUT mean_exec_time float8,
+    OUT stddev_exec_time float8,
+    OUT rows int8,
+    OUT shared_blks_hit int8,
+    OUT shared_blks_read int8,
+    OUT shared_blks_dirtied int8,
+    OUT shared_blks_written int8,
+    OUT local_blks_hit int8,
+    OUT local_blks_read int8,
+    OUT local_blks_dirtied int8,
+    OUT local_blks_written int8,
+    OUT temp_blks_read int8,
+    OUT temp_blks_written int8,
+    OUT blk_read_time float8,
+    OUT blk_write_time float8,
+    OUT wal_records int8,
+    OUT wal_fpi int8,
+    OUT wal_bytes numeric
+)
+RETURNS SETOF record
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_1_9'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.07233766666666668,3,92,0
+GRANT SELECT ON pg_stat_statements_info TO PUBLIC,0.071938,3,71,0
+"/* Then we can drop them */
+DROP FUNCTION pg_stat_statements_reset()",0.071703,1,69,0
+GRANT SELECT ON pg_stat_statements TO PUBLIC,0.07112800000000001,4,112,0
+"/* Now redefine */
+CREATE FUNCTION pg_stat_statements(IN showtext boolean,
+    OUT userid oid,
+    OUT dbid oid,
+    OUT toplevel bool,
+    OUT queryid bigint,
+    OUT query text,
+    OUT plans int8,
+    OUT total_plan_time float8,
+    OUT min_plan_time float8,
+    OUT max_plan_time float8,
+    OUT mean_plan_time float8,
+    OUT stddev_plan_time float8,
+    OUT calls int8,
+    OUT total_exec_time float8,
+    OUT min_exec_time float8,
+    OUT max_exec_time float8,
+    OUT mean_exec_time float8,
+    OUT stddev_exec_time float8,
+    OUT rows int8,
+    OUT shared_blks_hit int8,
+    OUT shared_blks_read int8,
+    OUT shared_blks_dirtied int8,
+    OUT shared_blks_written int8,
+    OUT local_blks_hit int8,
+    OUT local_blks_read int8,
+    OUT local_blks_dirtied int8,
+    OUT local_blks_written int8,
+    OUT temp_blks_read int8,
+    OUT temp_blks_written int8,
+    OUT blk_read_time float8,
+    OUT blk_write_time float8,
+    OUT temp_blk_read_time float8,
+    OUT temp_blk_write_time float8,
+    OUT wal_records int8,
+    OUT wal_fpi int8,
+    OUT wal_bytes numeric,
+    OUT jit_functions int8,
+    OUT jit_generation_time float8,
+    OUT jit_inlining_count int8,
+    OUT jit_inlining_time float8,
+    OUT jit_optimization_count int8,
+    OUT jit_optimization_time float8,
+    OUT jit_emission_count int8,
+    OUT jit_emission_time float8
+)
+RETURNS SETOF record
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_1_10'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.068803,1,28,0
+"/* Now redefine */
+CREATE FUNCTION pg_stat_statements(IN showtext boolean,
+    OUT userid oid,
+    OUT dbid oid,
+    OUT toplevel bool,
+    OUT queryid bigint,
+    OUT query text,
+    OUT plans int8,
+    OUT total_plan_time float8,
+    OUT min_plan_time float8,
+    OUT max_plan_time float8,
+    OUT mean_plan_time float8,
+    OUT stddev_plan_time float8,
+    OUT calls int8,
+    OUT total_exec_time float8,
+    OUT min_exec_time float8,
+    OUT max_exec_time float8,
+    OUT mean_exec_time float8,
+    OUT stddev_exec_time float8,
+    OUT rows int8,
+    OUT shared_blks_hit int8,
+    OUT shared_blks_read int8,
+    OUT shared_blks_dirtied int8,
+    OUT shared_blks_written int8,
+    OUT local_blks_hit int8,
+    OUT local_blks_read int8,
+    OUT local_blks_dirtied int8,
+    OUT local_blks_written int8,
+    OUT temp_blks_read int8,
+    OUT temp_blks_written int8,
+    OUT blk_read_time float8,
+    OUT blk_write_time float8,
+    OUT wal_records int8,
+    OUT wal_fpi int8,
+    OUT wal_bytes numeric
+)
+RETURNS SETOF record
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_1_9'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.06873933333333333,3,92,0
+DROP INDEX IF EXISTS idx_customer_order_items_product_id,0.0676045,2,108,0
+SELECT customer_order_id FROM customer_orders ORDER BY customer_order_id LIMIT $1,0.067381,1,4,0
+"/* Now redefine */
+CREATE FUNCTION pg_stat_statements(IN showtext boolean,
+    OUT userid oid,
+    OUT dbid oid,
+    OUT queryid bigint,
+    OUT query text,
+    OUT plans int8,
+    OUT total_plan_time float8,
+    OUT min_plan_time float8,
+    OUT max_plan_time float8,
+    OUT mean_plan_time float8,
+    OUT stddev_plan_time float8,
+    OUT calls int8,
+    OUT total_exec_time float8,
+    OUT min_exec_time float8,
+    OUT max_exec_time float8,
+    OUT mean_exec_time float8,
+    OUT stddev_exec_time float8,
+    OUT rows int8,
+    OUT shared_blks_hit int8,
+    OUT shared_blks_read int8,
+    OUT shared_blks_dirtied int8,
+    OUT shared_blks_written int8,
+    OUT local_blks_hit int8,
+    OUT local_blks_read int8,
+    OUT local_blks_dirtied int8,
+    OUT local_blks_written int8,
+    OUT temp_blks_read int8,
+    OUT temp_blks_written int8,
+    OUT blk_read_time float8,
+    OUT blk_write_time float8,
+    OUT wal_records int8,
+    OUT wal_fpi int8,
+    OUT wal_bytes numeric
+)
+RETURNS SETOF record
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_1_8'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.066604,3,93,0
+ALTER TABLE customer_orders DROP COLUMN IF EXISTS items_count,0.06660150000000001,2,80,0
+"SELECT
+                matviewname AS table_name,
+                pg_get_viewdef(matviewname::regclass, $1) AS definition,
+                ispopulated
+            FROM pg_matviews
+            WHERE schemaname = $2",0.06653978082191778,73,1262,0
+"/* Now redefine */
+CREATE FUNCTION pg_stat_statements(IN showtext boolean,
+    OUT userid oid,
+    OUT dbid oid,
+    OUT queryid bigint,
+    OUT query text,
+    OUT plans int8,
+    OUT total_plan_time float8,
+    OUT min_plan_time float8,
+    OUT max_plan_time float8,
+    OUT mean_plan_time float8,
+    OUT stddev_plan_time float8,
+    OUT calls int8,
+    OUT total_exec_time float8,
+    OUT min_exec_time float8,
+    OUT max_exec_time float8,
+    OUT mean_exec_time float8,
+    OUT stddev_exec_time float8,
+    OUT rows int8,
+    OUT shared_blks_hit int8,
+    OUT shared_blks_read int8,
+    OUT shared_blks_dirtied int8,
+    OUT shared_blks_written int8,
+    OUT local_blks_hit int8,
+    OUT local_blks_read int8,
+    OUT local_blks_dirtied int8,
+    OUT local_blks_written int8,
+    OUT temp_blks_read int8,
+    OUT temp_blks_written int8,
+    OUT blk_read_time float8,
+    OUT blk_write_time float8,
+    OUT wal_records int8,
+    OUT wal_fpi int8,
+    OUT wal_bytes numeric
+)
+RETURNS SETOF record
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_1_8'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.06383933333333333,3,93,0
+"/* Now redefine */
+CREATE FUNCTION pg_stat_statements_reset(IN userid Oid DEFAULT 0,
+	IN dbid Oid DEFAULT 0,
+	IN queryid bigint DEFAULT 0
+)
+RETURNS void
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_reset_1_7'
+LANGUAGE C STRICT PARALLEL SAFE",0.062902,1,32,0
+"/* Now redefine */
+CREATE FUNCTION pg_stat_statements(IN showtext boolean,
+    OUT userid oid,
+    OUT dbid oid,
+    OUT toplevel bool,
+    OUT queryid bigint,
+    OUT query text,
+    OUT plans int8,
+    OUT total_plan_time float8,
+    OUT min_plan_time float8,
+    OUT max_plan_time float8,
+    OUT mean_plan_time float8,
+    OUT stddev_plan_time float8,
+    OUT calls int8,
+    OUT total_exec_time float8,
+    OUT min_exec_time float8,
+    OUT max_exec_time float8,
+    OUT mean_exec_time float8,
+    OUT stddev_exec_time float8,
+    OUT rows int8,
+    OUT shared_blks_hit int8,
+    OUT shared_blks_read int8,
+    OUT shared_blks_dirtied int8,
+    OUT shared_blks_written int8,
+    OUT local_blks_hit int8,
+    OUT local_blks_read int8,
+    OUT local_blks_dirtied int8,
+    OUT local_blks_written int8,
+    OUT temp_blks_read int8,
+    OUT temp_blks_written int8,
+    OUT blk_read_time float8,
+    OUT blk_write_time float8,
+    OUT temp_blk_read_time float8,
+    OUT temp_blk_write_time float8,
+    OUT wal_records int8,
+    OUT wal_fpi int8,
+    OUT wal_bytes numeric,
+    OUT jit_functions int8,
+    OUT jit_generation_time float8,
+    OUT jit_inlining_count int8,
+    OUT jit_inlining_time float8,
+    OUT jit_optimization_count int8,
+    OUT jit_optimization_time float8,
+    OUT jit_emission_count int8,
+    OUT jit_emission_time float8
+)
+RETURNS SETOF record
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_1_10'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.06250633333333333,3,83,0
+"SELECT * FROM public.databasechangelog ORDER BY DATEEXECUTED ASC, ORDEREXECUTED ASC",0.05853943103448277,58,227,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.8--1.9.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+--- Define pg_stat_statements_info
+CREATE FUNCTION pg_stat_statements_info(
+    OUT dealloc bigint,
+    OUT stats_reset timestamp with time zone
+)
+RETURNS record
+AS '$libdir/pg_stat_statements'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.057370333333333336,3,86,0
+"SELECT
+                t.typname,
+                e.enumlabel
+            FROM pg_type t
+            JOIN pg_enum e ON t.oid = e.enumtypid
+            JOIN pg_namespace n ON n.oid = t.typnamespace
+            WHERE n.nspname = $1
+            ORDER BY t.typname, e.enumsortorder",0.05542528767123285,73,1888,0
+"SELECT slot_name, slot_type, xmin, pg_catalog.pg_wal_lsn_diff(restart_lsn, $1)::bigint, plugin, database, datoid, catalog_xmin, pg_catalog.pg_wal_lsn_diff(confirmed_flush_lsn, $2)::bigint FROM pg_catalog.pg_replication_slots WHERE NOT temporary",0.054351,2,1,0
+DROP INDEX IF EXISTS idx_customer_order_items_order_id,0.053253499999999995,2,108,0
+"SELECT
+                t.typname,
+                e.enumlabel
+            FROM pg_type t
+            JOIN pg_enum e ON t.oid = e.enumtypid
+            JOIN pg_namespace n ON n.oid = t.typnamespace
+            WHERE n.nspname = $1
+            ORDER BY t.typname, e.enumsortorder",0.0520399411764706,68,910,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.4--1.5.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+GRANT EXECUTE ON FUNCTION pg_stat_statements_reset() TO pg_read_all_stats",0.05077233333333333,3,38,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.5--1.6.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+-- Execution is only allowed for superusers, fixing issue with 1.5.
+REVOKE EXECUTE ON FUNCTION pg_stat_statements_reset() FROM pg_read_all_stats",0.050604666666666666,3,51,0
+"SELECT
+                matviewname AS table_name,
+                pg_get_viewdef(matviewname::regclass, $1) AS definition,
+                ispopulated
+            FROM pg_matviews
+            WHERE schemaname = $2",0.04814104411764706,68,1164,0
+"/* Now redefine */
+CREATE FUNCTION pg_stat_statements(IN showtext boolean,
+    OUT userid oid,
+    OUT dbid oid,
+    OUT queryid bigint,
+    OUT query text,
+    OUT plans int8,
+    OUT total_plan_time float8,
+    OUT min_plan_time float8,
+    OUT max_plan_time float8,
+    OUT mean_plan_time float8,
+    OUT stddev_plan_time float8,
+    OUT calls int8,
+    OUT total_exec_time float8,
+    OUT min_exec_time float8,
+    OUT max_exec_time float8,
+    OUT mean_exec_time float8,
+    OUT stddev_exec_time float8,
+    OUT rows int8,
+    OUT shared_blks_hit int8,
+    OUT shared_blks_read int8,
+    OUT shared_blks_dirtied int8,
+    OUT shared_blks_written int8,
+    OUT local_blks_hit int8,
+    OUT local_blks_read int8,
+    OUT local_blks_dirtied int8,
+    OUT local_blks_written int8,
+    OUT temp_blks_read int8,
+    OUT temp_blks_written int8,
+    OUT blk_read_time float8,
+    OUT blk_write_time float8,
+    OUT wal_records int8,
+    OUT wal_fpi int8,
+    OUT wal_bytes numeric
+)
+RETURNS SETOF record
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_1_8'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.047802,1,32,0
+"SELECT $1 AS TABLE_CAT, n.nspname AS TABLE_SCHEM, c.relname AS TABLE_NAME,  CASE n.nspname ~ $2 OR n.nspname = $3  WHEN $4 THEN CASE  WHEN n.nspname = $5 OR n.nspname = $6 THEN CASE c.relkind   WHEN $7 THEN $8   WHEN $9 THEN $10   WHEN $11 THEN $12   ELSE $13   END  WHEN n.nspname = $14 THEN CASE c.relkind   WHEN $15 THEN $16   WHEN $17 THEN $18   ELSE $19   END  ELSE CASE c.relkind   WHEN $20 THEN $21   WHEN $22 THEN $23   WHEN $24 THEN $25   WHEN $26 THEN $27   WHEN $28 THEN $29   ELSE $30   END  END  WHEN $31 THEN CASE c.relkind  WHEN $32 THEN $33  WHEN $34 THEN $35  WHEN $36 THEN $37  WHEN $38 then $39  WHEN $40 THEN $41  WHEN $42 THEN $43  WHEN $44 THEN $45  WHEN $46 THEN $47  WHEN $48 THEN $49  ELSE $50  END  ELSE $51  END  AS TABLE_TYPE, d.description AS REMARKS,  $52 as TYPE_CAT, $53 as TYPE_SCHEM, $54 as TYPE_NAME, $55 AS SELF_REFERENCING_COL_NAME, $56 AS REF_GENERATION  FROM pg_catalog.pg_namespace n, pg_catalog.pg_class c  LEFT JOIN pg_catalog.pg_description d ON (c.oid = d.objoid AND d.objsubid = $57  and d.classoid = $58::regclass)  WHERE c.relnamespace = n.oid  AND n.nspname LIKE $59 AND c.relname LIKE $60 AND ($61  OR ( c.relkind = $62 AND n.nspname !~ $63 AND n.nspname <> $64 )  OR ( c.relkind = $65 AND n.nspname !~ $66 AND n.nspname <> $67 ) )  ORDER BY TABLE_TYPE,TABLE_SCHEM,TABLE_NAME",0.04758322580645161,31,452,0
+"SELECT $1 AS TABLE_CAT, n.nspname AS TABLE_SCHEM, c.relname AS TABLE_NAME,  CASE n.nspname ~ $2 OR n.nspname = $3  WHEN $4 THEN CASE  WHEN n.nspname = $5 OR n.nspname = $6 THEN CASE c.relkind   WHEN $7 THEN $8   WHEN $9 THEN $10   WHEN $11 THEN $12   ELSE $13   END  WHEN n.nspname = $14 THEN CASE c.relkind   WHEN $15 THEN $16   WHEN $17 THEN $18   ELSE $19   END  ELSE CASE c.relkind   WHEN $20 THEN $21   WHEN $22 THEN $23   WHEN $24 THEN $25   WHEN $26 THEN $27   WHEN $28 THEN $29   ELSE $30   END  END  WHEN $31 THEN CASE c.relkind  WHEN $32 THEN $33  WHEN $34 THEN $35  WHEN $36 THEN $37  WHEN $38 then $39  WHEN $40 THEN $41  WHEN $42 THEN $43  WHEN $44 THEN $45  WHEN $46 THEN $47  WHEN $48 THEN $49  ELSE $50  END  ELSE $51  END  AS TABLE_TYPE, d.description AS REMARKS,  $52 as TYPE_CAT, $53 as TYPE_SCHEM, $54 as TYPE_NAME, $55 AS SELF_REFERENCING_COL_NAME, $56 AS REF_GENERATION  FROM pg_catalog.pg_namespace n, pg_catalog.pg_class c  LEFT JOIN pg_catalog.pg_description d ON (c.oid = d.objoid AND d.objsubid = $57  and d.classoid = $58::regclass)  WHERE c.relnamespace = n.oid  AND n.nspname LIKE $59 AND c.relname LIKE $60 AND ($61  OR ( c.relkind = $62 AND n.nspname !~ $63 AND n.nspname <> $64 )  OR ( c.relkind = $65 AND n.nspname !~ $66 AND n.nspname <> $67 ) )  ORDER BY TABLE_TYPE,TABLE_SCHEM,TABLE_NAME",0.04669896103896104,77,1142,0
+"INSERT INTO public.databasechangelog (ID, AUTHOR, FILENAME, DATEEXECUTED, ORDEREXECUTED, MD5SUM, DESCRIPTION, COMMENTS, EXECTYPE, CONTEXTS, LABELS, LIQUIBASE, DEPLOYMENT_ID) VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7, $8, $9, $10, $11, $12)",0.046053862068965515,29,28,0
+"UPDATE public.databasechangeloglock SET LOCKED = $1, LOCKEDBY = $2, LOCKGRANTED = NOW() WHERE ID = $3 AND LOCKED = $4",0.04528674666666665,75,254,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.4--1.5.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+GRANT EXECUTE ON FUNCTION pg_stat_statements_reset() TO pg_read_all_stats",0.04516933333333333,3,38,0
+"UPDATE public.databasechangeloglock SET LOCKED = $1, LOCKEDBY = $2, LOCKGRANTED = NOW() WHERE ID = $3 AND LOCKED = $4",0.04493526666666667,15,60,0
+GRANT SELECT ON pg_stat_statements_info TO PUBLIC,0.044837666666666665,3,71,0
+"SELECT $1 AS TABLE_CAT, n.nspname AS TABLE_SCHEM, c.relname AS TABLE_NAME,  CASE n.nspname ~ $2 OR n.nspname = $3  WHEN $4 THEN CASE  WHEN n.nspname = $5 OR n.nspname = $6 THEN CASE c.relkind   WHEN $7 THEN $8   WHEN $9 THEN $10   WHEN $11 THEN $12   ELSE $13   END  WHEN n.nspname = $14 THEN CASE c.relkind   WHEN $15 THEN $16   WHEN $17 THEN $18   ELSE $19   END  ELSE CASE c.relkind   WHEN $20 THEN $21   WHEN $22 THEN $23   WHEN $24 THEN $25   WHEN $26 THEN $27   WHEN $28 THEN $29   ELSE $30   END  END  WHEN $31 THEN CASE c.relkind  WHEN $32 THEN $33  WHEN $34 THEN $35  WHEN $36 THEN $37  WHEN $38 then $39  WHEN $40 THEN $41  WHEN $42 THEN $43  WHEN $44 THEN $45  WHEN $46 THEN $47  WHEN $48 THEN $49  ELSE $50  END  ELSE $51  END  AS TABLE_TYPE, d.description AS REMARKS,  $52 as TYPE_CAT, $53 as TYPE_SCHEM, $54 as TYPE_NAME, $55 AS SELF_REFERENCING_COL_NAME, $56 AS REF_GENERATION  FROM pg_catalog.pg_namespace n, pg_catalog.pg_class c  LEFT JOIN pg_catalog.pg_description d ON (c.oid = d.objoid AND d.objsubid = $57  and d.classoid = $58::regclass)  WHERE c.relnamespace = n.oid  AND n.nspname LIKE $59 AND c.relname LIKE $60 AND ($61  OR ( c.relkind = $62 AND n.nspname !~ $63 AND n.nspname <> $64 )  OR ( c.relkind = $65 AND n.nspname !~ $66 AND n.nspname <> $67 ) )  ORDER BY TABLE_TYPE,TABLE_SCHEM,TABLE_NAME",0.04358770833333333,72,1067,0
+"UPDATE public.databasechangeloglock SET LOCKED = $1, LOCKEDBY = $2, LOCKGRANTED = NOW() WHERE ID = $3 AND LOCKED = $4",0.04334894285714286,70,257,0
+"SELECT format($1, current_database(), $2)",0.042302,2,6,0
+"INSERT INTO public.databasechangelog (ID, AUTHOR, FILENAME, DATEEXECUTED, ORDEREXECUTED, MD5SUM, DESCRIPTION, COMMENTS, EXECTYPE, CONTEXTS, LABELS, LIQUIBASE, DEPLOYMENT_ID) VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7, $8, $9, $10, $11, $12)",0.04078677777777779,81,80,0
+"UPDATE public.databasechangeloglock SET LOCKED = $1, LOCKEDBY = $2, LOCKGRANTED = $3 WHERE ID = $4",0.04062645333333334,75,253,0
+"INSERT INTO public.databasechangelog (ID, AUTHOR, FILENAME, DATEEXECUTED, ORDEREXECUTED, MD5SUM, DESCRIPTION, COMMENTS, EXECTYPE, CONTEXTS, LABELS, LIQUIBASE, DEPLOYMENT_ID) VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7, $8, $9, $10, $11, $12)",0.040054091954023,87,86,0
+"SELECT * FROM public.databasechangelog ORDER BY DATEEXECUTED ASC, ORDEREXECUTED ASC",0.03964429999999999,140,555,0
+"SELECT * FROM public.databasechangelog ORDER BY DATEEXECUTED ASC, ORDEREXECUTED ASC",0.03932974666666669,150,595,0
+"/* Now redefine */
+CREATE FUNCTION pg_stat_statements(IN showtext boolean,
+    OUT userid oid,
+    OUT dbid oid,
+    OUT toplevel bool,
+    OUT queryid bigint,
+    OUT query text,
+    OUT plans int8,
+    OUT total_plan_time float8,
+    OUT min_plan_time float8,
+    OUT max_plan_time float8,
+    OUT mean_plan_time float8,
+    OUT stddev_plan_time float8,
+    OUT calls int8,
+    OUT total_exec_time float8,
+    OUT min_exec_time float8,
+    OUT max_exec_time float8,
+    OUT mean_exec_time float8,
+    OUT stddev_exec_time float8,
+    OUT rows int8,
+    OUT shared_blks_hit int8,
+    OUT shared_blks_read int8,
+    OUT shared_blks_dirtied int8,
+    OUT shared_blks_written int8,
+    OUT local_blks_hit int8,
+    OUT local_blks_read int8,
+    OUT local_blks_dirtied int8,
+    OUT local_blks_written int8,
+    OUT temp_blks_read int8,
+    OUT temp_blks_written int8,
+    OUT blk_read_time float8,
+    OUT blk_write_time float8,
+    OUT wal_records int8,
+    OUT wal_fpi int8,
+    OUT wal_bytes numeric
+)
+RETURNS SETOF record
+AS '$libdir/pg_stat_statements', 'pg_stat_statements_1_9'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.038801,1,26,0
+"UPDATE public.databasechangeloglock SET LOCKED = $1, LOCKEDBY = $2, LOCKGRANTED = $3 WHERE ID = $4",0.03876833333333333,15,60,0
+"UPDATE public.databasechangeloglock SET LOCKED = $1, LOCKEDBY = $2, LOCKGRANTED = $3 WHERE ID = $4",0.038687185714285706,70,256,0
+"-- Don't want this to be available to non-superusers.
+REVOKE ALL ON FUNCTION pg_stat_statements_reset() FROM PUBLIC",0.037037,3,36,0
+"-- Don't want this to be available to non-superusers.
+REVOKE ALL ON FUNCTION pg_stat_statements_reset() FROM PUBLIC",0.03690233333333333,3,36,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.5--1.6.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+-- Execution is only allowed for superusers, fixing issue with 1.5.
+REVOKE EXECUTE ON FUNCTION pg_stat_statements_reset() FROM pg_read_all_stats",0.036869000000000006,3,51,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.8--1.9.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+--- Define pg_stat_statements_info
+CREATE FUNCTION pg_stat_statements_info(
+    OUT dealloc bigint,
+    OUT stats_reset timestamp with time zone
+)
+RETURNS record
+AS '$libdir/pg_stat_statements'
+LANGUAGE C STRICT VOLATILE PARALLEL SAFE",0.036101,1,27,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.6--1.7.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+/* First we have to remove them from the extension */
+ALTER EXTENSION pg_stat_statements DROP FUNCTION pg_stat_statements_reset()",0.032868666666666664,3,60,0
+select current_schema(),0.03218444827586207,29,87,0
+"-- Don't want this to be available to non-superusers.
+REVOKE ALL ON FUNCTION pg_stat_statements_reset() FROM PUBLIC",0.029901,1,17,0
+"SELECT format($1, $2, $3)
+WHERE NOT EXISTS (
+  SELECT $4
+  FROM pg_roles
+  WHERE rolname = $5
+)",0.029205,1,4,0
+select current_schema(),0.02842508571428572,70,210,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.6--1.7.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+/* First we have to remove them from the extension */
+ALTER EXTENSION pg_stat_statements DROP FUNCTION pg_stat_statements_reset()",0.027636333333333336,3,60,0
+SELECT $1 FROM seed_history WHERE seed_version = $2 LIMIT $3,0.0273112,10,16,0
+"-- Don't want this to be available to non-superusers.
+REVOKE ALL ON FUNCTION pg_stat_statements_reset(Oid, Oid, bigint) FROM PUBLIC",0.027169000000000002,3,36,0
+"-- Don't want this to be available to non-superusers.
+REVOKE ALL ON FUNCTION pg_stat_statements_reset(Oid, Oid, bigint) FROM PUBLIC",0.027135,3,36,0
+select current_schema(),0.026705706666666666,75,223,2
+GRANT SELECT ON pg_stat_statements_info TO PUBLIC,0.026701,1,20,0
+DELETE FROM public.databasechangelog WHERE ID = $1 AND AUTHOR = $2 AND FILENAME = $3,0.025307481481481483,54,108,0
+SELECT MD5SUM FROM public.databasechangelog WHERE MD5SUM IS NOT NULL AND MD5SUM NOT LIKE $1,0.02519452173913044,69,69,0
+SELECT MD5SUM FROM public.databasechangelog WHERE MD5SUM IS NOT NULL AND MD5SUM NOT LIKE $1,0.02499767857142857,28,28,0
+DELETE FROM public.databasechangelog WHERE ID = $1 AND AUTHOR = $2 AND FILENAME = $3,0.023944586206896556,58,116,0
+DROP FUNCTION pg_stat_statements(boolean),0.02384588888888889,9,153,0
+SELECT LOCKED FROM public.databasechangeloglock WHERE ID=$1,0.02362093333333333,15,30,0
+SELECT LOCKED FROM public.databasechangeloglock WHERE ID=$1,0.023493114285714278,70,116,0
+"-- Don't want this to be available to non-superusers.
+REVOKE ALL ON FUNCTION pg_stat_statements_reset(Oid, Oid, bigint) FROM PUBLIC",0.023101,1,18,0
+SELECT MD5SUM FROM public.databasechangelog WHERE MD5SUM IS NOT NULL AND MD5SUM NOT LIKE $1,0.022946,74,74,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.4--1.5.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+GRANT EXECUTE ON FUNCTION pg_stat_statements_reset() TO pg_read_all_stats",0.022101,1,14,0
+SELECT datname AS TABLE_CAT FROM pg_catalog.pg_database WHERE datallowconn = $1 ORDER BY datname,0.021001000000000002,1,1,0
+SELECT datname AS TABLE_CAT FROM pg_catalog.pg_database WHERE datallowconn = $1 ORDER BY datname,0.018799,1,1,0
+"SELECT nspname AS TABLE_SCHEM, $1 AS TABLE_CATALOG FROM pg_catalog.pg_namespace  WHERE nspname <> $2 AND (nspname !~ $3  OR nspname = (pg_catalog.current_schemas($4))[$5]) AND (nspname !~ $6  OR nspname = replace((pg_catalog.current_schemas($7))[$8], $9, $10))  ORDER BY TABLE_SCHEM",0.0183,1,1,0
+DROP FUNCTION pg_stat_statements(boolean),0.017312555555555557,9,153,0
+"SELECT nspname AS TABLE_SCHEM, $1 AS TABLE_CATALOG FROM pg_catalog.pg_namespace  WHERE nspname <> $2 AND (nspname !~ $3  OR nspname = (pg_catalog.current_schemas($4))[$5]) AND (nspname !~ $6  OR nspname = replace((pg_catalog.current_schemas($7))[$8], $9, $10))  ORDER BY TABLE_SCHEM",0.017201,1,1,0
+"SELECT nspname AS TABLE_SCHEM, $1 AS TABLE_CATALOG FROM pg_catalog.pg_namespace  WHERE nspname <> $2 AND (nspname !~ $3  OR nspname = (pg_catalog.current_schemas($4))[$5]) AND (nspname !~ $6  OR nspname = replace((pg_catalog.current_schemas($7))[$8], $9, $10))  ORDER BY TABLE_SCHEM",0.0172,1,1,0
+ALTER EXTENSION pg_stat_statements DROP FUNCTION pg_stat_statements(boolean),0.01686844444444444,9,111,0
+ALTER EXTENSION pg_stat_statements DROP FUNCTION pg_stat_statements(boolean),0.01662311111111111,9,111,0
+SELECT COUNT(*) FROM public.databasechangelog,0.016423241379310345,58,56,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.6--1.7.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+/* First we have to remove them from the extension */
+ALTER EXTENSION pg_stat_statements DROP FUNCTION pg_stat_statements_reset()",0.016401,1,20,0
+SELECT COUNT(*) FROM public.databasechangeloglock,0.016182459770114933,87,86,0
+"NOT EXISTS (
+    SELECT $3
+    FROM pg_catalog.pg_roles
+    WHERE rolname = exporter_user
+  )",0.015501,1,1,0
+SELECT LOCKED FROM public.databasechangeloglock WHERE ID=$1,0.015326320000000004,75,103,0
+SELECT COUNT(*) FROM public.databasechangelog,0.015175619999999999,150,148,0
+SELECT COUNT(*) FROM public.databasechangelog,0.015070471428571429,140,138,0
+SELECT COUNT(*) FROM public.databasechangeloglock,0.01472007168458782,279,278,0
+"SET SEARCH_PATH TO public, ""$user"",""public""",0.014703591549295776,71,0,0
+SELECT COUNT(*) FROM public.databasechangeloglock,0.014655127090301,299,298,0
+SELECT datname AS TABLE_CAT FROM pg_catalog.pg_database WHERE datallowconn = $1 ORDER BY datname,0.014601,1,1,0
+SELECT MAX(ORDEREXECUTED) FROM public.databasechangelog,0.014420866666666669,45,44,0
+"SET SEARCH_PATH TO public, ""$user"",""public""",0.014404000000000002,193,0,0
+SET log_min_error_statement TO 'log',0.0139525,2,0,0
+"SET SEARCH_PATH TO public, ""$user"",""public""",0.013879833333333336,180,0,0
+SELECT MAX(ORDEREXECUTED) FROM public.databasechangelog,0.013527333333333334,15,14,0
+SELECT MAX(ORDEREXECUTED) FROM public.databasechangelog,0.013272333333333332,42,41,0
+"SELECT
+                trigger_name,
+                event_manipulation,
+                event_object_table,
+                action_timing,
+                action_statement
+            FROM information_schema.triggers
+            WHERE trigger_schema = $1
+            ORDER BY trigger_name",0.0131213698630137,73,132,0
+"SELECT
+                trigger_name,
+                event_manipulation,
+                event_object_table,
+                action_timing,
+                action_statement
+            FROM information_schema.triggers
+            WHERE trigger_schema = $1
+            ORDER BY trigger_name",0.013004058823529412,68,168,0
+"NOT EXISTS (
+    SELECT $3
+    FROM pg_catalog.pg_roles
+    WHERE rolname = exporter_user
+  )",0.012767666666666667,3,3,0
+SELECT $1 FROM pg_matviews WHERE matviewname = $2 LIMIT $3,0.0127005,2,6,0
+"NOT EXISTS (
+    SELECT $3
+    FROM pg_catalog.pg_roles
+    WHERE rolname = exporter_user
+  )",0.012367666666666667,3,3,0
+"SELECT $2 FROM ONLY ""public"".""products"" x WHERE ""product_id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",0.011805385449239598,785416,3952496,0
+DROP FUNCTION pg_stat_statements(boolean),0.011800666666666666,3,51,0
+"/* contrib/pg_stat_statements/pg_stat_statements--1.5--1.6.sql */
+
+-- complain if script is sourced in psql, rather than via ALTER EXTENSION
+
+
+-- Execution is only allowed for superusers, fixing issue with 1.5.
+REVOKE EXECUTE ON FUNCTION pg_stat_statements_reset() FROM pg_read_all_stats",0.0116,1,12,0
+"SELECT format($1, $2, $3)
+WHERE EXISTS (
+  SELECT $4
+  FROM pg_roles
+  WHERE rolname = $5
+)",0.009602000000000001,1,1,0
+DELETE FROM public.mv_revenue_by_day_category mv WHERE ctid OPERATOR(pg_catalog.=) ANY (SELECT diff.tid FROM pg_temp_22.pg_temp_17945_2 diff WHERE diff.tid IS NOT NULL AND diff.newdata IS NULL),0.009601,1,0,0
+SELECT * FROM pg_catalog.pg_authid WHERE rolname = $1,0.009152,2,2,0
+ALTER EXTENSION pg_stat_statements DROP FUNCTION pg_stat_statements(boolean),0.009100333333333334,3,37,0
+SET log_min_duration_statement TO -1,0.008302,2,0,0
+"SELECT format($1, $2)",0.007972,14,0,0
+SET log_statement TO none,0.007751,2,0,0
+"SELECT format($1, $2, $3)
+WHERE NOT EXISTS (
+  SELECT $4
+  FROM pg_database
+  WHERE datname = $5
+)",0.007501,1,1,0
+SELECT CASE WHEN pg_is_in_recovery() THEN $1 ELSE $2 END,0.0074505,2,0,0
+"WITH totals AS (
+  SELECT
+    customer_order_id,
+    sum(ordered_quantity * sale_price)::numeric(14,2) AS total_amount,
+    count(*)::integer AS items_count
+  FROM customer_order_items
+  GROUP BY customer_order_id
+)
+UPDATE customer_orders co
+SET total_amount = COALESCE(totals.total_amount, $1),
+    items_count = COALESCE(totals.items_count, $2),
+    last_status_changed_at = co.created_at
+FROM totals
+WHERE totals.customer_order_id = co.customer_order_id",0.0072,1,0,0
+select version(),0.006657678571428572,140,0,0
+"WITH totals AS (
+  SELECT
+    customer_order_id,
+    sum(ordered_quantity * sale_price)::numeric(14,2) AS total_amount,
+    count(*)::integer AS items_count
+  FROM customer_order_items
+  GROUP BY customer_order_id
+)
+UPDATE customer_orders co
+SET total_amount = COALESCE(totals.total_amount, $1),
+    items_count = COALESCE(totals.items_count, $2),
+    last_status_changed_at = co.created_at
+FROM totals
+WHERE totals.customer_order_id = co.customer_order_id",0.006601,1,0,0
+"WITH totals AS (
+  SELECT
+    customer_order_id,
+    sum(ordered_quantity * sale_price)::numeric(14,2) AS total_amount,
+    count(*)::integer AS items_count
+  FROM customer_order_items
+  GROUP BY customer_order_id
+)
+UPDATE customer_orders co
+SET total_amount = COALESCE(totals.total_amount, $1),
+    items_count = COALESCE(totals.items_count, $2),
+    last_status_changed_at = co.created_at
+FROM totals
+WHERE totals.customer_order_id = co.customer_order_id",0.0064010000000000004,1,0,0
+select version(),0.006239706666666667,150,0,0
+"WITH totals AS (
+  SELECT
+    customer_order_id,
+    sum(ordered_quantity * sale_price)::numeric(14,2) AS total_amount,
+    count(*)::integer AS items_count
+  FROM customer_order_items
+  GROUP BY customer_order_id
+)
+UPDATE customer_orders co
+SET total_amount = COALESCE(totals.total_amount, $1),
+    items_count = COALESCE(totals.items_count, $2),
+    last_status_changed_at = co.created_at
+FROM totals
+WHERE totals.customer_order_id = co.customer_order_id",0.0061,1,0,0
+select version(),0.005950241379310345,58,0,0
+"WITH totals AS (
+  SELECT
+    customer_order_id,
+    sum(ordered_quantity * sale_price)::numeric(14,2) AS total_amount,
+    count(*)::integer AS items_count
+  FROM customer_order_items
+  GROUP BY customer_order_id
+)
+UPDATE customer_orders co
+SET total_amount = COALESCE(totals.total_amount, $1),
+    items_count = COALESCE(totals.items_count, $2),
+    last_status_changed_at = co.created_at
+FROM totals
+WHERE totals.customer_order_id = co.customer_order_id",0.0051,1,0,0
+SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2,0.004907404761904762,84,168,0
+SHOW SEARCH_PATH,0.004745162857142851,350,0,0
+SHOW SEARCH_PATH,0.004690475728155339,103,0,0
+SHOW SEARCH_PATH,0.004453373333333331,375,0,0
+SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2,0.004308942028985508,69,138,0
+"WITH totals AS (
+  SELECT
+    customer_order_id,
+    sum(ordered_quantity * sale_price)::numeric(14,2) AS total_amount,
+    count(*)::integer AS items_count
+  FROM customer_order_items
+  GROUP BY customer_order_id
+)
+UPDATE customer_orders co
+SET total_amount = COALESCE(totals.total_amount, $1),
+    items_count = COALESCE(totals.items_count, $2),
+    last_status_changed_at = co.created_at
+FROM totals
+WHERE totals.customer_order_id = co.customer_order_id",0.0042,1,0,0
+"WITH totals AS (
+  SELECT
+    customer_order_id,
+    sum(ordered_quantity * sale_price)::numeric(14,2) AS total_amount,
+    count(*)::integer AS items_count
+  FROM customer_order_items
+  GROUP BY customer_order_id
+)
+UPDATE customer_orders co
+SET total_amount = COALESCE(totals.total_amount, $1),
+    items_count = COALESCE(totals.items_count, $2),
+    last_status_changed_at = co.created_at
+FROM totals
+WHERE totals.customer_order_id = co.customer_order_id",0.003601,1,0,0
+DELETE FROM public.databasechangeloglock,0.0036,1,0,0
+DELETE FROM public.databasechangeloglock,0.0036,1,0,0
+DELETE FROM public.databasechangeloglock,0.0034000000000000002,1,0,0
+SET pg_stat_statements.track_utility to 'off',0.0033004999999999996,2,0,0
+"UPDATE customer_orders
+SET total_amount = COALESCE(total_amount, $1),
+    items_count = COALESCE(items_count, $2),
+    last_status_changed_at = COALESCE(last_status_changed_at, created_at)",0.0026,1,0,0
+"SELECT $2 FROM ONLY ""public"".""suppliers"" x WHERE ""supplier_id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",0.002252546224999998,40000,160000,0
+BEGIN,0.0020596319018404913,163,0,0
+"SELECT $2 FROM ONLY ""public"".""customer_order_items"" x WHERE ""customer_order_item_id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",0.0020393284749999486,200000,1000000,0
+"UPDATE customer_orders
+SET total_amount = COALESCE(total_amount, $1),
+    items_count = COALESCE(items_count, $2),
+    last_status_changed_at = COALESCE(last_status_changed_at, created_at)",0.0019010000000000001,1,0,0
+"UPDATE customer_orders
+SET total_amount = COALESCE(total_amount, $1),
+    items_count = COALESCE(items_count, $2),
+    last_status_changed_at = COALESCE(last_status_changed_at, created_at)",0.0019,1,0,0
+ROLLBACK,0.0017346206896551722,29,0,0
+"UPDATE customer_orders
+SET total_amount = COALESCE(total_amount, $1),
+    items_count = COALESCE(items_count, $2),
+    last_status_changed_at = COALESCE(last_status_changed_at, created_at)",0.0017000000000000001,1,0,0
+"SELECT $2 FROM ONLY ""public"".""supplier_order_items"" x WHERE ""supplier_order_item_id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",0.0016895538125000034,80000,320000,0
+ROLLBACK,0.0016072000000000003,70,0,0
+"SELECT $2 FROM ONLY ""public"".""shipments"" x WHERE ""shipment_id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",0.0015426349049999894,200000,800000,0
+COMMIT,0.0015301285714285713,70,0,0
+ROLLBACK,0.0015188,75,0,0
+COMMIT,0.001510448275862069,29,0,0
+COMMIT,0.0014920133333333337,75,0,0
+"SELECT $2 FROM ONLY ""public"".""supplier_orders"" x WHERE ""supplier_order_id"" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x",0.0014067993499999834,120000,480000,0
+"UPDATE customer_orders
+SET total_amount = COALESCE(total_amount, $1),
+    items_count = COALESCE(items_count, $2),
+    last_status_changed_at = COALESCE(last_status_changed_at, created_at)",0.0014,1,0,0
+BEGIN,0.0013589393382352946,544,0,0
+BEGIN,0.0012757307032590073,583,0,0

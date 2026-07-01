@@ -2,3 +2,7 @@
 data/postgres/
 __pycache__/
 *.pyc
+chaos/artifacts/
+scripts/tmp_*.sql
+*.md
+!/README.md

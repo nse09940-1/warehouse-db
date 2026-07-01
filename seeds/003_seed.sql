@@ -43,8 +43,10 @@ SET supplier_id = EXCLUDED.supplier_id,
 WITH params AS (
   SELECT GREATEST(1, :'seed_count'::int) AS sc
 ),
-product_pool AS (
-  SELECT array_agg(product_id ORDER BY product_id) AS ids
+product_bounds AS (
+  SELECT
+    MIN(product_id) AS min_id,
+    COUNT(*)::bigint AS total_count
   FROM products
 ),
 series_data AS (
@@ -63,11 +65,11 @@ INSERT INTO supplier_order_items (
 SELECT
   310000 + ((series_data.order_n - 1) * 2) + series_data.line_n,
   300000 + series_data.order_n,
-  product_pool.ids[((series_data.order_n + series_data.line_n - 2) % cardinality(product_pool.ids)) + 1],
+  product_bounds.min_id + ((series_data.order_n + series_data.line_n - 2) % product_bounds.total_count),
   (series_data.line_n + (series_data.order_n % 5) + 1)::numeric(14,3),
   (10 + (series_data.order_n % 80))::numeric(14,2)
-FROM series_data, product_pool
-WHERE cardinality(product_pool.ids) > 0
+FROM series_data, product_bounds
+WHERE product_bounds.total_count > 0
 ON CONFLICT (supplier_order_item_id) DO UPDATE
 SET supplier_order_id = EXCLUDED.supplier_order_id,
     product_id = EXCLUDED.product_id,

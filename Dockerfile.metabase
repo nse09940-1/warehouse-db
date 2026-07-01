@@ -1,0 +1,7 @@
+FROM metabase/metabase:v0.56.2
+
+USER root
+
+RUN mkdir -p /plugins
+ADD https://github.com/ClickHouse/metabase-clickhouse-driver/releases/latest/download/clickhouse.metabase-driver.jar /plugins/clickhouse.metabase-driver.jar
+RUN chmod 644 /plugins/clickhouse.metabase-driver.jar

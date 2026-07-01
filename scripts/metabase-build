@@ -1,0 +1,431 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+METABASE_URL="${METABASE_URL:-http://localhost:3001}"
+METABASE_ADMIN_EMAIL="${METABASE_ADMIN_EMAIL:-admin@example.com}"
+METABASE_ADMIN_PASSWORD="${METABASE_ADMIN_PASSWORD:-MetabaseAdmin123!}"
+
+METABASE_DASHBOARD_NAME="${METABASE_DASHBOARD_NAME:-Warehouse BI Metrics}"
+METABASE_DASHBOARD_DESCRIPTION="${METABASE_DASHBOARD_DESCRIPTION:-Inventory movements analytics dashboard for lab 7.2}"
+
+CLICKHOUSE_METABASE_DATABASE_NAME="${CLICKHOUSE_METABASE_DATABASE_NAME:-Warehouse BI ClickHouse}"
+CLICKHOUSE_HOST="${CLICKHOUSE_HOST:-clickhouse}"
+CLICKHOUSE_PORT="${CLICKHOUSE_PORT:-8123}"
+CLICKHOUSE_DB="${CLICKHOUSE_DB:-bi_analytics}"
+CLICKHOUSE_METABASE_USER="${CLICKHOUSE_METABASE_USER:-clickhouse_metabase}"
+CLICKHOUSE_METABASE_PASSWORD="${CLICKHOUSE_METABASE_PASSWORD:-clickhouse_metabase_password}"
+
+export METABASE_URL
+export METABASE_ADMIN_EMAIL
+export METABASE_ADMIN_PASSWORD
+export METABASE_DASHBOARD_NAME
+export METABASE_DASHBOARD_DESCRIPTION
+export CLICKHOUSE_METABASE_DATABASE_NAME
+export CLICKHOUSE_HOST
+export CLICKHOUSE_PORT
+export CLICKHOUSE_DB
+export CLICKHOUSE_METABASE_USER
+export CLICKHOUSE_METABASE_PASSWORD
+
+TMP_DIR="$(mktemp -d)"
+METABASE_SESSION=""
+trap 'rm -rf "${TMP_DIR}"' EXIT
+
+log() {
+  printf '[metabase-build] %s\n' "$1" >&2
+}
+
+require_command() {
+  local command_name="$1"
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "Required command is missing: ${command_name}" >&2
+    exit 1
+  fi
+}
+
+require_command curl
+require_command python
+
+api_call() {
+  local method="$1"
+  local path="$2"
+  local body_file="${3:-}"
+  local output_file="$4"
+  local http_code
+
+  local curl_args=(
+    -sS
+    -X "$method"
+    -H "Content-Type: application/json"
+    -o "$output_file"
+    -w "%{http_code}"
+  )
+
+  if [[ -n "${METABASE_SESSION}" ]]; then
+    curl_args+=(-H "X-Metabase-Session: ${METABASE_SESSION}")
+  fi
+
+  if [[ -n "$body_file" ]]; then
+    curl_args+=(--data-binary "@${body_file}")
+  fi
+
+  http_code="$(curl "${curl_args[@]}" "${METABASE_URL%/}${path}")"
+
+  if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
+    echo "Metabase API request failed: ${method} ${path} -> HTTP ${http_code}" >&2
+    cat "$output_file" >&2
+    exit 1
+  fi
+}
+
+python_json() {
+  local script="$1"
+  local input_file="$2"
+  shift 2
+  python -c "$script" "$@" <"$input_file"
+}
+
+write_json_file() {
+  local output_file="$1"
+  local script="$2"
+  shift 2
+  python -c "$script" "$@" >"$output_file"
+}
+
+login_metabase() {
+  local body_file="${TMP_DIR}/login.json"
+  local response_file="${TMP_DIR}/login-response.json"
+
+  write_json_file "$body_file" '
+import json, os
+print(json.dumps({
+    "username": os.environ["METABASE_ADMIN_EMAIL"],
+    "password": os.environ["METABASE_ADMIN_PASSWORD"],
+}))
+'
+
+  api_call POST "/api/session" "$body_file" "$response_file"
+  METABASE_SESSION="$(python_json '
+import json, sys
+payload = json.load(sys.stdin)
+session_id = payload.get("id")
+if not session_id:
+    raise SystemExit("Metabase session id was not returned. Make sure Metabase is initialized and admin credentials are correct.")
+print(session_id)
+' "$response_file")"
+}
+
+find_entity_id_by_name() {
+  local input_file="$1"
+  local entity_name="$2"
+  python_json '
+import json, sys
+target_name = sys.argv[1]
+payload = json.load(sys.stdin)
+items = payload.get("data") if isinstance(payload, dict) and "data" in payload else payload
+for item in items:
+    if item.get("name") == target_name and not item.get("archived", False):
+        print(item["id"])
+        break
+' "$input_file" "$entity_name"
+}
+
+ensure_clickhouse_database() {
+  local databases_file="${TMP_DIR}/databases.json"
+  local body_file="${TMP_DIR}/database-payload.json"
+  local response_file="${TMP_DIR}/database-response.json"
+
+  api_call GET "/api/database" "" "$databases_file"
+  local database_id
+  database_id="$(find_entity_id_by_name "$databases_file" "$CLICKHOUSE_METABASE_DATABASE_NAME")"
+
+  if [[ -n "$database_id" ]]; then
+    log "Using existing Metabase database: ${CLICKHOUSE_METABASE_DATABASE_NAME} (id=${database_id})"
+    printf '%s' "$database_id"
+    return 0
+  fi
+
+  write_json_file "$body_file" '
+import json, os
+print(json.dumps({
+    "engine": "clickhouse",
+    "name": os.environ["CLICKHOUSE_METABASE_DATABASE_NAME"],
+    "details": {
+        "host": os.environ["CLICKHOUSE_HOST"],
+        "port": int(os.environ["CLICKHOUSE_PORT"]),
+        "dbname": os.environ["CLICKHOUSE_DB"],
+        "user": os.environ["CLICKHOUSE_METABASE_USER"],
+        "password": os.environ["CLICKHOUSE_METABASE_PASSWORD"],
+        "ssl": False,
+        "advanced-options": False,
+    },
+    "is_full_sync": True,
+}))
+'
+
+  api_call POST "/api/database" "$body_file" "$response_file"
+  database_id="$(python_json '
+import json, sys
+payload = json.load(sys.stdin)
+print(payload["id"])
+' "$response_file")"
+
+  log "Created Metabase database: ${CLICKHOUSE_METABASE_DATABASE_NAME} (id=${database_id})"
+  printf '%s' "$database_id"
+}
+
+ensure_dashboard() {
+  local dashboards_file="${TMP_DIR}/dashboards.json"
+  local body_file="${TMP_DIR}/dashboard-payload.json"
+  local response_file="${TMP_DIR}/dashboard-response.json"
+
+  api_call GET "/api/dashboard" "" "$dashboards_file"
+  local dashboard_id
+  dashboard_id="$(find_entity_id_by_name "$dashboards_file" "$METABASE_DASHBOARD_NAME")"
+
+  if [[ -n "$dashboard_id" ]]; then
+    log "Using existing dashboard: ${METABASE_DASHBOARD_NAME} (id=${dashboard_id})"
+    printf '%s' "$dashboard_id"
+    return 0
+  fi
+
+  write_json_file "$body_file" '
+import json, os
+print(json.dumps({
+    "name": os.environ["METABASE_DASHBOARD_NAME"],
+    "description": os.environ["METABASE_DASHBOARD_DESCRIPTION"],
+    "width": "fixed",
+}))
+'
+
+  api_call POST "/api/dashboard" "$body_file" "$response_file"
+  dashboard_id="$(python_json '
+import json, sys
+payload = json.load(sys.stdin)
+print(payload["id"])
+' "$response_file")"
+
+  log "Created dashboard: ${METABASE_DASHBOARD_NAME} (id=${dashboard_id})"
+  printf '%s' "$dashboard_id"
+}
+
+normalize_sql_query() {
+  local sql_file="$1"
+  local query
+  query="$(
+    sed \
+      -e '/WHERE moved_at >= {{date_from}}/d' \
+      -e '/AND moved_at < {{date_to}}/d' \
+      -e '/WHERE moved_at >= {{date_from}}$/d' \
+      -e '/AND moved_at < {{date_to}};$/d' \
+      "$sql_file"
+  )"
+
+  QUERY_TEXT="$query" python -c '
+import os
+text = os.environ["QUERY_TEXT"]
+lines = [line.rstrip() for line in text.splitlines()]
+clean = []
+previous_blank = False
+for line in lines:
+    blank = not line.strip()
+    if blank and previous_blank:
+        continue
+    clean.append(line)
+    previous_blank = blank
+result = "\n".join(clean).strip()
+print(result)
+'
+}
+
+card_file_for_name() {
+  case "$1" in
+    "KPI: Total Quantity Dashboard") printf '%s' "${PROJECT_ROOT}/bi/sql/01_total_quantity_kpi.sql" ;;
+    "Trend: Daily Quantity By Type Dashboard") printf '%s' "${PROJECT_ROOT}/bi/sql/02_daily_trend_by_type.sql" ;;
+    "Top Warehouses By Quantity Dashboard") printf '%s' "${PROJECT_ROOT}/bi/sql/03_top_warehouses.sql" ;;
+    "Movement Type Share Dashboard") printf '%s' "${PROJECT_ROOT}/bi/sql/04_movement_type_share.sql" ;;
+    *)
+      echo "Unknown card name: $1" >&2
+      exit 1
+      ;;
+  esac
+}
+
+card_display_for_name() {
+  case "$1" in
+    "KPI: Total Quantity Dashboard") printf '%s' "scalar" ;;
+    "Trend: Daily Quantity By Type Dashboard") printf '%s' "line" ;;
+    "Top Warehouses By Quantity Dashboard") printf '%s' "bar" ;;
+    "Movement Type Share Dashboard") printf '%s' "pie" ;;
+    *)
+      echo "Unknown card name: $1" >&2
+      exit 1
+      ;;
+  esac
+}
+
+card_visualization_settings_for_name() {
+  case "$1" in
+    "Movement Type Share Dashboard")
+      printf '%s' '{"pie.show_legend": true, "pie.slice_threshold": 0, "pie.percent_visibility": "inside", "version": 2}'
+      ;;
+    *)
+      printf '%s' '{}'
+      ;;
+  esac
+}
+
+dashboard_layout_for_name() {
+  case "$1" in
+    "KPI: Total Quantity Dashboard") printf '%s' '{"row":0,"col":0,"size_x":6,"size_y":3}' ;;
+    "Trend: Daily Quantity By Type Dashboard") printf '%s' '{"row":0,"col":6,"size_x":12,"size_y":6}' ;;
+    "Top Warehouses By Quantity Dashboard") printf '%s' '{"row":6,"col":0,"size_x":12,"size_y":6}' ;;
+    "Movement Type Share Dashboard") printf '%s' '{"row":6,"col":12,"size_x":12,"size_y":8}' ;;
+    *)
+      echo "Unknown card name: $1" >&2
+      exit 1
+      ;;
+  esac
+}
+
+ensure_card() {
+  local database_id="$1"
+  local card_name="$2"
+  local cards_file="${TMP_DIR}/cards.json"
+  local body_file="${TMP_DIR}/card-$(printf '%s' "$card_name" | tr ' /:' '___').json"
+  local response_file="${TMP_DIR}/card-response-$(printf '%s' "$card_name" | tr ' /:' '___').json"
+  local existing_card_id
+  local sql_file
+  local card_query
+  local display
+  local visualization_settings
+
+  sql_file="$(card_file_for_name "$card_name")"
+  card_query="$(normalize_sql_query "$sql_file")"
+  display="$(card_display_for_name "$card_name")"
+  visualization_settings="$(card_visualization_settings_for_name "$card_name")"
+
+  api_call GET "/api/card" "" "$cards_file"
+  existing_card_id="$(find_entity_id_by_name "$cards_file" "$card_name")"
+
+  write_json_file "$body_file" '
+import json, os, sys
+database_id = int(sys.argv[1])
+card_name = sys.argv[2]
+display = sys.argv[3]
+query = sys.argv[4]
+visualization_settings = json.loads(sys.argv[5])
+payload = {
+    "name": card_name,
+    "display": display,
+    "visualization_settings": visualization_settings,
+    "dataset_query": {
+        "database": database_id,
+        "type": "native",
+        "native": {
+            "query": query,
+            "template-tags": {},
+        },
+    },
+}
+print(json.dumps(payload))
+' "$database_id" "$card_name" "$display" "$card_query" "$visualization_settings"
+
+  if [[ -n "$existing_card_id" ]]; then
+    api_call PUT "/api/card/${existing_card_id}" "$body_file" "$response_file"
+    log "Updated card: ${card_name} (id=${existing_card_id})"
+    printf '%s' "$existing_card_id"
+    return 0
+  fi
+
+  api_call POST "/api/card" "$body_file" "$response_file"
+  existing_card_id="$(python_json '
+import json, sys
+payload = json.load(sys.stdin)
+print(payload["id"])
+' "$response_file")"
+  log "Created card: ${card_name} (id=${existing_card_id})"
+  printf '%s' "$existing_card_id"
+}
+
+dashboard_has_card() {
+  local dashboard_file="$1"
+  local card_name="$2"
+  python_json '
+import json, sys
+target_name = sys.argv[1]
+payload = json.load(sys.stdin)
+for dashcard in payload.get("dashcards", []):
+    card = dashcard.get("card") or {}
+    if card.get("name") == target_name:
+        print("yes")
+        break
+' "$dashboard_file" "$card_name"
+}
+
+attach_card_to_dashboard() {
+  local dashboard_id="$1"
+  local card_id="$2"
+  local card_name="$3"
+  local dashboard_file="${TMP_DIR}/dashboard-${dashboard_id}.json"
+  local body_file="${TMP_DIR}/dashcard-$(printf '%s' "$card_name" | tr ' /:' '___').json"
+  local response_file="${TMP_DIR}/dashcard-response-$(printf '%s' "$card_name" | tr ' /:' '___').json"
+  local already_attached
+  local layout
+
+  api_call GET "/api/dashboard/${dashboard_id}" "" "$dashboard_file"
+  already_attached="$(dashboard_has_card "$dashboard_file" "$card_name")"
+  if [[ "$already_attached" == "yes" ]]; then
+    log "Dashboard already contains card: ${card_name}"
+    return 0
+  fi
+
+  layout="$(dashboard_layout_for_name "$card_name")"
+
+  write_json_file "$body_file" '
+import json, sys
+card_id = int(sys.argv[1])
+layout = json.loads(sys.argv[2])
+payload = {
+    "cardId": card_id,
+    "row": layout["row"],
+    "col": layout["col"],
+    "sizeX": layout["size_x"],
+    "sizeY": layout["size_y"],
+    "parameter_mappings": [],
+    "visualization_settings": {},
+}
+print(json.dumps(payload))
+' "$card_id" "$layout"
+
+  api_call POST "/api/dashboard/${dashboard_id}/cards" "$body_file" "$response_file"
+  log "Attached card to dashboard: ${card_name}"
+}
+
+main() {
+  login_metabase
+  log "Authenticated in Metabase as ${METABASE_ADMIN_EMAIL}"
+
+  local database_id
+  local dashboard_id
+  database_id="$(ensure_clickhouse_database)"
+  dashboard_id="$(ensure_dashboard)"
+
+  local card_name
+  local card_id
+  for card_name in \
+    "KPI: Total Quantity Dashboard" \
+    "Trend: Daily Quantity By Type Dashboard" \
+    "Top Warehouses By Quantity Dashboard" \
+    "Movement Type Share Dashboard"; do
+    card_id="$(ensure_card "$database_id" "$card_name")"
+    attach_card_to_dashboard "$dashboard_id" "$card_id" "$card_name"
+  done
+
+  log "Metabase build completed. Dashboard: ${METABASE_DASHBOARD_NAME}"
+}
+
+main "$@"

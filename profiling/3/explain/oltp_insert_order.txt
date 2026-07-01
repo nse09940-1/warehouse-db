@@ -1,0 +1,82 @@
+Aggregate  (cost=13936.45..13936.46 rows=1 width=8) (actual time=87.847..87.853 rows=1 loops=1)
+  Output: count(*)
+  Buffers: shared hit=3271 dirtied=4
+  CTE selected_customer
+    ->  Limit  (cost=2985.00..2985.00 rows=1 width=16) (actual time=15.177..15.179 rows=1 loops=1)
+          Output: customers.customer_id, (random())
+          Buffers: shared hit=1238
+          ->  Sort  (cost=2985.00..3235.00 rows=100000 width=16) (actual time=15.175..15.176 rows=1 loops=1)
+                Output: customers.customer_id, (random())
+                Sort Key: (random())
+                Sort Method: top-N heapsort  Memory: 25kB
+                Buffers: shared hit=1238
+                ->  Seq Scan on public.customers  (cost=0.00..2485.00 rows=100000 width=16) (actual time=0.039..8.723 rows=100000 loops=1)
+                      Output: customers.customer_id, random()
+                      Buffers: shared hit=1235
+  CTE selected_products
+    ->  Limit  (cost=10950.96..10951.08 rows=3 width=52) (actual time=70.466..70.470 rows=3 loops=1)
+          Output: products.product_id, (((row_number() OVER (?) + 1))::numeric(14,3)), ((('20'::double precision + floor(((random()) * '150'::double precision))))::numeric(14,2)), (random())
+          Buffers: shared hit=1866
+          ->  Result  (cost=10950.96..18450.96 rows=200000 width=52) (actual time=70.464..70.467 rows=3 loops=1)
+                Output: products.product_id, (((row_number() OVER (?) + 1))::numeric(14,3)), (('20'::double precision + floor(((random()) * '150'::double precision))))::numeric(14,2), (random())
+                Buffers: shared hit=1866
+                ->  Sort  (cost=10950.96..11450.96 rows=200000 width=34) (actual time=70.447..70.448 rows=3 loops=1)
+                      Output: products.product_id, (((row_number() OVER (?) + 1))::numeric(14,3)), (random())
+                      Sort Key: (random())
+                      Sort Method: top-N heapsort  Memory: 25kB
+                      Buffers: shared hit=1866
+                      ->  WindowAgg  (cost=0.00..8366.00 rows=200000 width=34) (actual time=0.019..53.806 rows=200000 loops=1)
+                            Output: products.product_id, ((row_number() OVER (?) + 1))::numeric(14,3), random()
+                            Buffers: shared hit=1866
+                            ->  Seq Scan on public.products  (cost=0.00..3866.00 rows=200000 width=8) (actual time=0.012..15.421 rows=200000 loops=1)
+                                  Output: products.product_id
+                                  Buffers: shared hit=1866
+  CTE new_order
+    ->  Insert on public.customer_orders  (cost=0.08..0.16 rows=1 width=108) (actual time=87.631..87.634 rows=1 loops=1)
+          Output: customer_orders.customer_order_id
+          Buffers: shared hit=3176
+          ->  Subquery Scan on "*SELECT*"  (cost=0.08..0.16 rows=1 width=108) (actual time=87.433..87.435 rows=1 loops=1)
+                Output: nextval('customer_orders_customer_order_id_seq'::regclass), "*SELECT*".customer_id, "*SELECT*".format, "*SELECT*".now, "*SELECT*".customer_order_status, "*SELECT*"."?column?", "*SELECT*"."?column?_1", "*SELECT*"."?column?_2", "*SELECT*".total_amount, "*SELECT*".items_count, "*SELECT*".now_1
+                Buffers: shared hit=3117
+                ->  Nested Loop  (cost=0.08..0.16 rows=1 width=102) (actual time=85.683..85.685 rows=1 loops=1)
+                      Output: selected_customer.customer_id, format('Profile street %s'::text, (floor((random() * '1000'::double precision)))::integer), now(), 'new'::customer_order_status, (now() + '1 day'::interval), (now() + '1 day 04:00:00'::interval), 1, ((sum((selected_products.ordered_quantity * selected_products.sale_price)))::numeric(14,2)), ((count(*))::integer), now()
+                      Buffers: shared hit=3104
+                      ->  CTE Scan on selected_customer  (cost=0.00..0.02 rows=1 width=8) (actual time=15.179..15.180 rows=1 loops=1)
+                            Output: selected_customer.customer_id
+                            Buffers: shared hit=1238
+                      ->  Aggregate  (cost=0.08..0.10 rows=1 width=22) (actual time=70.488..70.488 rows=1 loops=1)
+                            Output: (sum((selected_products.ordered_quantity * selected_products.sale_price)))::numeric(14,2), (count(*))::integer
+                            Buffers: shared hit=1866
+                            ->  CTE Scan on selected_products  (cost=0.00..0.06 rows=3 width=36) (actual time=70.469..70.478 rows=3 loops=1)
+                                  Output: selected_products.product_id, selected_products.ordered_quantity, selected_products.sale_price
+                                  Buffers: shared hit=1866
+  CTE inserted_items
+    ->  Insert on public.customer_order_items  (cost=0.00..0.12 rows=3 width=60) (actual time=87.814..87.841 rows=3 loops=1)
+          Output: customer_order_items.customer_order_id
+          Buffers: shared hit=3271 dirtied=4
+          ->  Nested Loop  (cost=0.00..0.12 rows=3 width=60) (actual time=87.658..87.664 rows=3 loops=1)
+                Output: nextval('customer_order_items_customer_order_item_id_seq'::regclass), new_order.customer_order_id, selected_products_1.product_id, selected_products_1.ordered_quantity, selected_products_1.sale_price
+                Buffers: shared hit=3190 dirtied=1
+                ->  CTE Scan on new_order  (cost=0.00..0.02 rows=1 width=8) (actual time=87.632..87.635 rows=1 loops=1)
+                      Output: new_order.customer_order_id
+                      Buffers: shared hit=3176
+                ->  CTE Scan on selected_products selected_products_1  (cost=0.00..0.06 rows=3 width=44) (actual time=0.001..0.002 rows=3 loops=1)
+                      Output: selected_products_1.product_id, selected_products_1.ordered_quantity, selected_products_1.sale_price
+  CTE inserted_audit_note
+    ->  Insert on public.customer_order_audit_notes  (cost=0.00..0.03 rows=0 width=0) (actual time=0.210..0.210 rows=0 loops=1)
+          Buffers: shared hit=82 dirtied=3
+          ->  CTE Scan on new_order new_order_1  (cost=0.00..0.03 rows=1 width=88) (actual time=0.024..0.024 rows=1 loops=1)
+                Output: nextval('customer_order_audit_notes_audit_note_id_seq'::regclass), new_order_1.customer_order_id, 'operator'::text, 'Order created by collect-profiling script'::text, now()
+                Buffers: shared hit=12 dirtied=1
+  ->  CTE Scan on inserted_items  (cost=0.00..0.06 rows=3 width=0) (actual time=87.815..87.843 rows=3 loops=1)
+        Output: inserted_items.customer_order_id
+        Buffers: shared hit=3271 dirtied=4
+Query Identifier: 5823746054787646642
+Planning:
+  Buffers: shared hit=153
+Planning Time: 1.103 ms
+Trigger RI_ConstraintTrigger_c_17769 for constraint customer_orders_customer_id_fkey on customer_orders: time=1.824 calls=1
+Trigger RI_ConstraintTrigger_c_17783 for constraint customer_order_items_customer_order_id_fkey on customer_order_items: time=0.111 calls=3
+Trigger RI_ConstraintTrigger_c_17788 for constraint customer_order_items_product_id_fkey on customer_order_items: time=0.086 calls=3
+Trigger RI_ConstraintTrigger_c_17941 for constraint customer_order_audit_notes_customer_order_id_fkey on customer_order_audit_notes: time=0.027 calls=1
+Execution Time: 90.253 ms
